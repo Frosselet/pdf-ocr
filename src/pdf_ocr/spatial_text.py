@@ -8,12 +8,28 @@ scattered text exactly as they appear visually.
 from __future__ import annotations
 
 import statistics
+from dataclasses import dataclass, field
 
 import fitz  # PyMuPDF
 
 
-def _render_page_grid(page: fitz.Page, cluster_threshold: float = 2.0) -> str:
-    """Render a single PDF page as a spatial text grid."""
+@dataclass
+class PageLayout:
+    """Structured layout extracted from a single PDF page."""
+
+    rows: dict[int, list[tuple[int, str]]] = field(default_factory=dict)
+    row_count: int = 0
+    cell_w: float = 6.0
+
+
+def _extract_page_layout(
+    page: fitz.Page, cluster_threshold: float = 2.0
+) -> PageLayout | None:
+    """Extract structured layout from a PDF page.
+
+    Returns a PageLayout with row-grouped spans and column positions,
+    or None if the page contains no text.
+    """
     data = page.get_text("dict")
     spans: list[dict] = []
     for block in data["blocks"]:
@@ -32,7 +48,7 @@ def _render_page_grid(page: fitz.Page, cluster_threshold: float = 2.0) -> str:
                 })
 
     if not spans:
-        return ""
+        return None
 
     # Compute dynamic cell width: median of (bbox_width / char_count) for
     # spans with 2+ characters.
@@ -71,13 +87,26 @@ def _render_page_grid(page: fitz.Page, cluster_threshold: float = 2.0) -> str:
         col = round((s["x"] - x_min) / cell_w)
         rows.setdefault(row_idx, []).append((col, s["text"]))
 
+    return PageLayout(
+        rows=rows,
+        row_count=len(row_clusters),
+        cell_w=cell_w,
+    )
+
+
+def _render_page_grid(page: fitz.Page, cluster_threshold: float = 2.0) -> str:
+    """Render a single PDF page as a spatial text grid."""
+    layout = _extract_page_layout(page, cluster_threshold)
+    if layout is None:
+        return ""
+
     # Render each row into a character buffer.
     lines: list[str] = []
-    for row_idx in range(len(row_clusters)):
-        if row_idx not in rows:
+    for row_idx in range(layout.row_count):
+        if row_idx not in layout.rows:
             lines.append("")
             continue
-        entries = rows[row_idx]
+        entries = layout.rows[row_idx]
         # Determine buffer size needed.
         max_end = max(col + len(text) for col, text in entries)
         buf = [" "] * max_end

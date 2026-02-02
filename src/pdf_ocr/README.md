@@ -110,6 +110,109 @@ text = pdf_to_spatial_text("document.pdf")
 
 A single string with all pages joined by `page_separator`. Each page is a block of lines where text spans appear at their spatial grid positions.
 
+## Compressed Spatial Text
+
+The spatial grid preserves layout perfectly but wastes tokens on whitespace padding — a 62,000-character shipping stem is mostly spaces. `compress_spatial_text()` works from the same raw span data but produces a **token-efficient structured representation** that LLMs understand natively.
+
+### Pipeline
+
+```
+PageLayout (shared with spatial renderer)
+  │
+  ▼
+1. Region detection ──► classify row groups as table / text / heading / kv_pairs / scattered
+  │
+  ▼
+2. Multi-row merge ──► detect repeating row patterns (e.g., 3-row shipping records) and collapse
+  │
+  ▼
+3. Region rendering ──► markdown tables, flowing paragraphs, key: value lines
+  │
+  ▼
+4. Assembly ──► join regions with blank lines, pages with separator
+```
+
+### Region Detection
+
+Each row is characterized by its span count and column positions. Contiguous rows are classified:
+
+| Region | Detection rule | Rendered as |
+|---|---|---|
+| **table** | 3+ consecutive rows sharing 2+ aligned column anchors | Markdown pipe table |
+| **text** | Consecutive single-span rows, left-aligned | Flowing paragraph |
+| **heading** | Single short span, isolated | Plain text line |
+| **kv_pairs** | Consecutive 2-span rows (label + value) | `key: value` lines |
+| **scattered** | Fallback | Tab-separated spans |
+
+Table detection uses a **column anchor pool**: as rows are scanned, all column positions are accumulated. A new row joins the table if it shares 2+ anchors with the pool. This handles alternating row patterns (e.g., 7-column data rows interleaved with 5-column date/time rows).
+
+### Multi-Row Record Merging
+
+Some PDFs split a single logical record across multiple rows. For example, shipping stems from `2857439.pdf` use 3 rows per ship:
+
+```
+Row 1: dates       →  10/07/2025   10/07/2025   06/08/2025   06/08/2025   09/08/2025
+Row 2: data        →  Newcastle  ADAGIO  NT25084  ARROW COMMODITIES  Wheat  26,914  Completed
+Row 3: times       →  11:45 AM   2:25 PM   8:06 AM   8:06 AM   11:15 PM
+```
+
+The compressor detects repeating span-count patterns (here `[5, 7, 5]`) and merges sub-rows, producing cells like `10/07/2025 11:45 AM`. A header offset search skips irregular header rows before finding the repeating body pattern.
+
+### API
+
+```python
+from pdf_ocr import compress_spatial_text
+
+text = compress_spatial_text("document.pdf")
+```
+
+#### Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `pdf_path` | `str` | required | Path to the PDF file |
+| `pages` | `list[int] \| None` | `None` | 0-based page indices; `None` = all |
+| `cluster_threshold` | `float` | `2.0` | Max y-distance (points) to merge into one row |
+| `page_separator` | `str` | `"\f"` | String inserted between pages |
+| `table_format` | `str` | `"markdown"` | `"markdown"` for pipe tables or `"tsv"` for tab-separated |
+| `merge_multi_row` | `bool` | `True` | Detect and merge multi-row records in tables |
+| `min_table_rows` | `int` | `3` | Minimum multi-span rows to classify a region as a table |
+
+### Compression Results
+
+Tested across 14 input PDFs:
+
+| Document type | Spatial chars | Compressed chars | Reduction |
+|---|---|---|---|
+| Shipping stems (table-heavy) | 3,600–62,000 | 1,800–20,900 | 49–67% |
+| KV-pair layouts | 12,700 | 7,700 | 40% |
+| Clean tables | 573 | 341 | 40% |
+| Mixed content | 400–930 | 350–680 | 16–27% |
+
+### Example
+
+**Spatial grid** (6,471 chars):
+```
+                                                                                   Shipping Stem Report
+                                                                                      Date Generated: 15/09/2025
+                                                                                                                                                            Date of       Date of
+                                                                                                                                         Quantity
+   Port                 Ship Name                       Ref #             Exporter                    Commodity                           Nomination        Nomination     ETA ...
+Newcastle               ADAGIO                          NT25084      ARROW COMMODITIES               Wheat               26,914                                           Completed
+                                                                                                                                          11:45 AM          2:25 PM       8:06 AM ...
+```
+
+**Compressed** (2,129 chars):
+```
+Shipping Stem Report
+
+Date Generated: 15/09/2025
+
+|Port|Ship Name|Ref #|Exporter|Commodity|...|Nomination|Nomination|ETA|ETB|ETS|Load Status|
+|---|---|---|---|---|---|---|---|---|---|---|---|
+|Newcastle|ADAGIO|NT25084|ARROW COMMODITIES|Wheat|26,914|10/07/2025 11:45 AM|10/07/2025 2:25 PM|06/08/2025 8:06 AM|...|Completed|
+```
+
 ## Limitations
 
 - **Monospace assumption**: The grid uses a single character width per page. Proportional fonts will have slight alignment imperfections, though the median-based cell width minimizes this.
