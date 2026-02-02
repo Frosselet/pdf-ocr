@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pdf-ocr"
+version = "0.1.0"
+description = "Extract structured data from PDF documents via LLMs"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "baml-py>=0.218.1",
+    "fitz>=0.0.1.dev2",
+    "ipykernel>=7.1.0",
+    "jupyter>=1.1.1",
+    "pymupdf4llm>=0.2.9",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pdf_ocr"]
