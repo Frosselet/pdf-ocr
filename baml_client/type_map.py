@@ -16,8 +16,41 @@ from . import stream_types
 
 type_map = {
 
+    "types.AggregationInfo": types.AggregationInfo,
+    "stream_types.AggregationInfo": stream_types.AggregationInfo,
+
+    "types.CanonicalSchema": types.CanonicalSchema,
+    "stream_types.CanonicalSchema": stream_types.CanonicalSchema,
+
+    "types.ColumnDef": types.ColumnDef,
+    "stream_types.ColumnDef": stream_types.ColumnDef,
+
+    "types.FieldMapping": types.FieldMapping,
+    "stream_types.FieldMapping": stream_types.FieldMapping,
+
+    "types.HeaderInfo": types.HeaderInfo,
+    "stream_types.HeaderInfo": stream_types.HeaderInfo,
+
+    "types.InterpretationMetadata": types.InterpretationMetadata,
+    "stream_types.InterpretationMetadata": stream_types.InterpretationMetadata,
+
+    "types.MappedRecord": types.MappedRecord,
+    "stream_types.MappedRecord": stream_types.MappedRecord,
+
+    "types.MappedTable": types.MappedTable,
+    "stream_types.MappedTable": stream_types.MappedTable,
+
+    "types.ParsedTable": types.ParsedTable,
+    "stream_types.ParsedTable": stream_types.ParsedTable,
+
     "types.Resume": types.Resume,
     "stream_types.Resume": stream_types.Resume,
 
+
+    "types.AggregationType": types.AggregationType,
+
+    "types.Confidence": types.Confidence,
+
+    "types.TableType": types.TableType,
 
 }

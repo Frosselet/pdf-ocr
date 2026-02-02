@@ -83,12 +83,20 @@ def _classify_regions(
         col_positions[ri] = _row_column_positions(entries)
         span_counts[ri] = len(entries)
 
+    # Build row_texts for single-span rows so _detect_table_runs can
+    # distinguish numeric aggregation rows from section-label rows.
+    row_texts: dict[int, str] = {}
+    for ri in row_indices:
+        if span_counts[ri] < 2:
+            row_texts[ri] = " ".join(text for _, text in layout.rows[ri])
+
     regions: list[Region] = []
     used: set[int] = set()
 
     # Detect tables.
     table_runs = _detect_table_runs(
-        row_indices, col_positions, span_counts, min_table_rows, col_tolerance
+        row_indices, col_positions, span_counts, min_table_rows, col_tolerance,
+        row_texts=row_texts,
     )
     for run in table_runs:
         used.update(run)
@@ -189,12 +197,28 @@ def _classify_regions(
     return regions
 
 
+def _is_numeric_value(text: str) -> bool:
+    """Return True if *text* looks like a numeric value (totals, subtotals).
+
+    Strips commas, dots, whitespace, currency symbols, %, +/- and checks
+    whether the remainder is empty or all digits.  This catches values like
+    ``337,000``, ``$1,234.56``, ``+10.00%``, ``593,810``.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return True
+    for ch in " ,._$€£%+-":
+        stripped = stripped.replace(ch, "")
+    return stripped.isdigit()
+
+
 def _detect_table_runs(
     row_indices: list[int],
     col_positions: dict[int, list[int]],
     span_counts: dict[int, int],
     min_table_rows: int,
     col_tolerance: int,
+    row_texts: dict[int, str] | None = None,
 ) -> list[list[int]]:
     """Find maximal runs of rows that form table regions.
 
@@ -241,7 +265,15 @@ def _detect_table_runs(
         if sc < 2:
             # Single-span rows extend an existing run but don't start one.
             if current_run and ri - current_run[-1] <= 2:
-                current_run.append(ri)
+                text = (row_texts or {}).get(ri, "")
+                if _is_numeric_value(text):
+                    # Numeric value (likely subtotal/aggregate) — keep in table.
+                    current_run.append(ri)
+                else:
+                    # Non-numeric text (likely section label) — flush the run.
+                    _flush_run()
+                    current_run = []
+                    pool = set()
             continue
 
         if not current_run:

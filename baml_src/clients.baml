@@ -18,6 +18,14 @@ client<llm> CustomGPT5Mini {
   }
 }
 
+client<llm> CustomGPT4o {
+  provider openai
+  options {
+    model "gpt-4o"
+    api_key env.OPENAI_API_KEY
+  }
+}
+
 // Openai with chat completion
 client<llm> CustomGPT5Chat {
   provider openai

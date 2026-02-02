@@ -37,12 +37,79 @@ def get_checks(checks: typing.Dict[CheckName, Check]) -> typing.List[Check]:
 def all_succeeded(checks: typing.Dict[CheckName, Check]) -> bool:
     return all(check.status == "succeeded" for check in get_checks(checks))
 # #########################################################################
-# Generated enums (0)
+# Generated enums (3)
 # #########################################################################
 
+class AggregationType(str, Enum):
+    Total = "Total"
+    Sum = "Sum"
+    Min = "Min"
+    Max = "Max"
+    Average = "Average"
+    Count = "Count"
+    NoAggregation = "NoAggregation"
+
+class Confidence(str, Enum):
+    High = "High"
+    Medium = "Medium"
+    Low = "Low"
+
+class TableType(str, Enum):
+    FlatHeader = "FlatHeader"
+    HierarchicalHeader = "HierarchicalHeader"
+    PivotedTable = "PivotedTable"
+    TransposedTable = "TransposedTable"
+    Unknown = "Unknown"
+
 # #########################################################################
-# Generated classes (1)
+# Generated classes (10)
 # #########################################################################
+
+class AggregationInfo(BaseModel):
+    type: AggregationType
+    axis: str = Field(description='\'row\' or \'column\' — the axis along which aggregation runs')
+    labels: typing.List[str] = Field(description='Labels identifying aggregation rows/columns, e.g. [\'Total\', \'Grand Total\']')
+
+class CanonicalSchema(BaseModel):
+    columns: typing.List["ColumnDef"]
+    description: typing.Optional[str] = Field(default=None, description='Optional description of what this schema represents')
+
+class ColumnDef(BaseModel):
+    name: str = Field(description='Canonical column name')
+    type: str = Field(description='Expected type: string, int, float, bool, date')
+    description: str = Field(description='What this column represents')
+    aliases: typing.List[str] = Field(description='Alternative names this column may appear as in source tables')
+
+class FieldMapping(BaseModel):
+    column_name: str = Field(description='Canonical column name from the schema')
+    source: str = Field(description='Where the value came from, e.g. \'column: Vessel Name\', \'section header\', \'document title\', \'inferred from context\'')
+    rationale: str = Field(description='Brief explanation of why this mapping was chosen')
+    confidence: Confidence
+
+class HeaderInfo(BaseModel):
+    levels: int = Field(description='Number of header levels (1 for flat, >1 for hierarchical)')
+    names: typing.List[typing.List[str]] = Field(description='Header names per level, outer = level, inner = columns')
+
+class InterpretationMetadata(BaseModel):
+    model: str = Field(description='Model that produced this result, e.g. \'openai/gpt-4o\'')
+    field_mappings: typing.List["FieldMapping"] = Field(description='One entry per canonical column, explaining how it was resolved')
+    sections_detected: typing.Optional[typing.List[str]] = Field(default=None, description='Section/group labels found in the text, if any (e.g. [\'GERALDTON\', \'KWINANA\'])')
+
+class MappedRecord(BaseModel):
+    model_config = ConfigDict(extra='allow')
+
+class MappedTable(BaseModel):
+    records: typing.List["MappedRecord"] = Field(description='Mapped data records conforming to the canonical schema')
+    unmapped_columns: typing.List[str] = Field(description='Source columns that could not be mapped to any canonical column')
+    mapping_notes: typing.Optional[str] = Field(default=None, description='Notes about the mapping process, e.g. ambiguous matches or type coercion issues')
+    metadata: "InterpretationMetadata" = Field(description='Metadata about the interpretation: model used, per-field mapping rationale, detected sections')
+
+class ParsedTable(BaseModel):
+    table_type: TableType
+    headers: "HeaderInfo"
+    aggregations: typing.Optional["AggregationInfo"] = Field(default=None, description='Present only if the table contains aggregation rows/columns')
+    data_rows: typing.List[typing.List[str]] = Field(description='All data rows (excluding headers and aggregation rows). Each inner array is one row of cell values as strings.')
+    notes: typing.Optional[str] = Field(default=None, description='Any caveats or observations about the table structure')
 
 class Resume(BaseModel):
     name: str

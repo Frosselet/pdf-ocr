@@ -146,6 +146,8 @@ Each row is characterized by its span count and column positions. Contiguous row
 
 Table detection uses a **column anchor pool**: as rows are scanned, all column positions are accumulated. A new row joins the table if it shares 2+ anchors with the pool. This handles alternating row patterns (e.g., 7-column data rows interleaved with 5-column date/time rows).
 
+**Section label promotion**: Single-span rows inside a table run are checked for content. Numeric values (e.g., `337,000`, `593,810`) are kept as aggregation/totals rows within the table. Non-numeric single-span rows (e.g., `KWINANA`, `ALBANY`) flush the current table run — they become standalone rows classified as headings by the remaining-row pipeline. This prevents section labels from being absorbed into table runs as empty pipe-cell rows, giving the LLM clear section boundaries between table blocks.
+
 ### Multi-Row Record Merging
 
 Some PDFs split a single logical record across multiple rows. For example, shipping stems from `2857439.pdf` use 3 rows per ship:
@@ -212,6 +214,173 @@ Date Generated: 15/09/2025
 |---|---|---|---|---|---|---|---|---|---|---|---|
 |Newcastle|ADAGIO|NT25084|ARROW COMMODITIES|Wheat|26,914|10/07/2025 11:45 AM|10/07/2025 2:25 PM|06/08/2025 8:06 AM|...|Completed|
 ```
+
+## Table Interpretation
+
+Once you have compressed text, `interpret_table()` sends it through a BAML-powered LLM pipeline that extracts structured tabular data and maps it to a **canonical schema** you define. This bridges the gap between raw PDF text and typed, application-ready records.
+
+### Why a Canonical Schema?
+
+Source PDFs use inconsistent column names — one document says "Ship Name", another says "Vessel", a third says "Vessel Name". A canonical schema lets you declare the columns your application expects, along with aliases the LLM should recognise:
+
+```python
+from pdf_ocr import CanonicalSchema, ColumnDef
+
+schema = CanonicalSchema(
+    description="Shipping stem vessel loading records",
+    columns=[
+        ColumnDef("port", "string", "Loading port name — may appear as a section header rather than a column", aliases=[]),
+        ColumnDef("vessel_name", "string", "Name of the vessel", aliases=["Ship Name", "Vessel"]),
+        ColumnDef("commodity", "string", "Type of commodity", aliases=["Commodity"]),
+        ColumnDef("quantity_tonnes", "int", "Quantity in tonnes", aliases=["Quantity", "Total"]),
+        ColumnDef("eta", "date", "Estimated time of arrival", aliases=["ETA", "Date ETA of Ship"]),
+        ColumnDef("status", "string", "Loading status", aliases=["Status", "Load Status"]),
+    ],
+)
+```
+
+Each `ColumnDef` takes a canonical `name`, a `type` (`string`, `int`, `float`, `bool`, `date`), a human-readable `description` the LLM uses for disambiguation, and optional `aliases`.
+
+### Context Inference
+
+Not all schema fields correspond to table columns. Some values live in section headers, document titles, or surrounding text. For example, a shipping stem might group rows under port name headings ("GERALDTON", "KWINANA") without a "Port" column in the table itself.
+
+When a canonical column has **no matching source column** (especially when `aliases` is empty), the LLM looks for its value in:
+
+- Section headers or group labels above or between data groups
+- Document title, subtitle, or metadata lines
+- Repeated contextual values that apply to all rows in a group
+
+When a value is inferred from context, it is applied to all rows in that section. The `description` field on `ColumnDef` is especially important for context-inferred columns — it tells the LLM where to look.
+
+### Pipeline
+
+Two modes are available:
+
+```
+                        ┌──────────────────────────────────┐
+  2-step pipeline       │  compressed text                 │
+  (default)             │        │                         │
+                        │        ▼                         │
+                        │  AnalyzeAndParseTable (GPT-4o)   │
+                        │        │                         │
+                        │        ▼                         │
+                        │  ParsedTable (intermediate)      │
+                        │        │                         │
+                        │        ▼                         │
+                        │  MapToCanonicalSchema (GPT-4o)   │
+                        │        │                         │
+                        │        ▼                         │
+                        │  MappedTable (output)            │
+                        └──────────────────────────────────┘
+
+                        ┌──────────────────────────────────┐
+  Single-shot           │  compressed text + schema        │
+  (1 LLM call)         │        │                         │
+                        │        ▼                         │
+                        │  InterpretTable (GPT-4o)         │
+                        │        │                         │
+                        │        ▼                         │
+                        │  MappedTable (output)            │
+                        └──────────────────────────────────┘
+```
+
+**2-step** (`interpret_table`): Step 1 analyses the table structure — identifying the table type, extracting headers, separating aggregation rows, and parsing every data row. Step 2 maps parsed columns to canonical columns using names, aliases, and descriptions, coercing types along the way. This is the default because it produces more reliable results on complex tables.
+
+**Single-shot** (`interpret_table_single_shot`): Performs analysis, parsing, and mapping in a single LLM call. Saves one round-trip and works well for simple flat-header tables.
+
+Both modes use GPT-4o by default; override with `model="..."`. Both support context inference and return per-field mapping metadata.
+
+### Table Types
+
+The pipeline recognises five structural patterns:
+
+| Type | Description | Example |
+|---|---|---|
+| `FlatHeader` | Single header row, regular data rows | Standard shipping stem |
+| `HierarchicalHeader` | Multi-level headers with spanning groups | Quarterly report with "Q1 / Revenue / Costs" |
+| `PivotedTable` | Categories as rows, periods/attributes as columns | Commodity volumes by month |
+| `TransposedTable` | Fields as rows, records as columns | Single-entity property sheet |
+| `Unknown` | Fallback for ambiguous structures | — |
+
+### Dynamic Schema via TypeBuilder
+
+The output `MappedRecord` type uses BAML's `@@dynamic` annotation — it has no fixed fields at definition time. At runtime, `interpret.py` uses a `TypeBuilder` to add one optional property per canonical column:
+
+```python
+tb = TypeBuilder()
+record_builder = tb.MappedRecord
+record_builder.add_property("port", native.string().optional())
+record_builder.add_property("quantity_tonnes", native.int().optional())
+```
+
+This tells the LLM exactly which fields to produce and their types, without requiring a new BAML class for every schema.
+
+### API
+
+#### Sync
+
+```python
+from pdf_ocr import compress_spatial_text, interpret_table, CanonicalSchema, ColumnDef, to_records
+
+compressed = compress_spatial_text("document.pdf")
+schema = CanonicalSchema(columns=[...])
+
+# 2-step (default)
+result = interpret_table(compressed, schema)
+
+# Single-shot alternative
+result = interpret_table_single_shot(compressed, schema)
+
+# With a fallback model — retries with fallback if primary model fails
+result = interpret_table(compressed, schema, model="openai/gpt-4o", fallback_model="openai/gpt-4o-mini")
+
+# Convert to plain dicts
+for record in to_records(result):
+    print(record)
+```
+
+#### Async (parallel across pages)
+
+```python
+import asyncio
+from pdf_ocr.interpret import interpret_tables_async, CanonicalSchema, ColumnDef
+
+pages = compressed.split("\f")
+tables = asyncio.run(interpret_tables_async(pages, schema, fallback_model="openai/gpt-4o-mini"))
+```
+
+`interpret_tables_async` runs all parse calls concurrently via `asyncio.gather()`, then all map calls concurrently — maximising throughput when processing multi-page documents.
+
+All functions accept an optional `fallback_model` keyword argument. When set, if the primary `model` raises an exception (network error, rate limit, unavailable model), the call is retried with the fallback model.
+
+#### Functions
+
+| Function | Steps | Default model | Use case |
+|---|---|---|---|
+| `interpret_table(text, schema)` | 2 (parse + map) | GPT-4o | Default; best accuracy on complex tables |
+| `interpret_table_single_shot(text, schema)` | 1 | GPT-4o | Simple tables; saves one round-trip |
+| `analyze_and_parse(text)` | 1 | GPT-4o | Parse only; inspect structure before mapping |
+| `map_to_schema(parsed, schema)` | 1 | GPT-4o | Map a previously parsed table |
+| `interpret_tables_async(texts, schema)` | 2 per table | GPT-4o | Parallel across multiple tables/pages |
+| `to_records(mapped_table)` | — | — | Convert `MappedTable` to `list[dict]` |
+
+All interpretation functions accept `model` and `fallback_model` keyword arguments to override the default model.
+
+#### Output
+
+`interpret_table` returns a `MappedTable` with:
+- **`records`** — list of `MappedRecord` objects. Dynamic fields match the canonical column names. Access via `record.port`, `record.quantity_tonnes`, etc., or convert with `to_records()`.
+- **`unmapped_columns`** — source columns that could not be mapped to any canonical column.
+- **`mapping_notes`** — optional notes about ambiguous matches or type coercion issues.
+- **`metadata`** — an `InterpretationMetadata` object with:
+  - **`model`** — the model that produced the result (e.g. `"openai/gpt-4o"`).
+  - **`field_mappings`** — one `FieldMapping` per canonical column, each containing:
+    - `column_name` — the canonical column name
+    - `source` — where the value came from (e.g. `"column: Ship Name"`, `"section header"`, `"document title"`)
+    - `rationale` — brief explanation of why this mapping was chosen
+    - `confidence` — `High` (direct name/alias match), `Medium` (inferred from context), or `Low` (best guess)
+  - **`sections_detected`** — section/group labels found in the text (e.g. `["GERALDTON", "KWINANA"]`), or `None` if no sections were detected.
 
 ## Limitations
 

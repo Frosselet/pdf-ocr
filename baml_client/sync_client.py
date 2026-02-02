@@ -94,6 +94,20 @@ class BamlSyncClient:
     def parse_stream(self):
       return self.__llm_stream_parser
 
+    def AnalyzeAndParseTable(self, compressed_text: str,
+        baml_options: BamlCallOptions = {},
+    ) -> types.ParsedTable:
+        # Check if on_tick is provided
+        if 'on_tick' in baml_options:
+            __stream__ = self.stream.AnalyzeAndParseTable(compressed_text=compressed_text,
+                baml_options=baml_options)
+            return __stream__.get_final_response()
+        else:
+            # Original non-streaming code
+            __result__ = self.__options.merge_options(baml_options).call_function_sync(function_name="AnalyzeAndParseTable", args={
+                "compressed_text": compressed_text,
+            })
+            return typing.cast(types.ParsedTable, __result__.cast_to(types, types, stream_types, False, __runtime__))
     def ExtractResume(self, resume: str,
         baml_options: BamlCallOptions = {},
     ) -> types.Resume:
@@ -108,6 +122,34 @@ class BamlSyncClient:
                 "resume": resume,
             })
             return typing.cast(types.Resume, __result__.cast_to(types, types, stream_types, False, __runtime__))
+    def InterpretTable(self, compressed_text: str,schema: types.CanonicalSchema,model_name: str,
+        baml_options: BamlCallOptions = {},
+    ) -> types.MappedTable:
+        # Check if on_tick is provided
+        if 'on_tick' in baml_options:
+            __stream__ = self.stream.InterpretTable(compressed_text=compressed_text,schema=schema,model_name=model_name,
+                baml_options=baml_options)
+            return __stream__.get_final_response()
+        else:
+            # Original non-streaming code
+            __result__ = self.__options.merge_options(baml_options).call_function_sync(function_name="InterpretTable", args={
+                "compressed_text": compressed_text,"schema": schema,"model_name": model_name,
+            })
+            return typing.cast(types.MappedTable, __result__.cast_to(types, types, stream_types, False, __runtime__))
+    def MapToCanonicalSchema(self, parsed_table: types.ParsedTable,schema: types.CanonicalSchema,model_name: str,
+        baml_options: BamlCallOptions = {},
+    ) -> types.MappedTable:
+        # Check if on_tick is provided
+        if 'on_tick' in baml_options:
+            __stream__ = self.stream.MapToCanonicalSchema(parsed_table=parsed_table,schema=schema,model_name=model_name,
+                baml_options=baml_options)
+            return __stream__.get_final_response()
+        else:
+            # Original non-streaming code
+            __result__ = self.__options.merge_options(baml_options).call_function_sync(function_name="MapToCanonicalSchema", args={
+                "parsed_table": parsed_table,"schema": schema,"model_name": model_name,
+            })
+            return typing.cast(types.MappedTable, __result__.cast_to(types, types, stream_types, False, __runtime__))
     
 
 
@@ -117,6 +159,18 @@ class BamlStreamClient:
     def __init__(self, options: DoNotUseDirectlyCallManager):
         self.__options = options
 
+    def AnalyzeAndParseTable(self, compressed_text: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.BamlSyncStream[stream_types.ParsedTable, types.ParsedTable]:
+        __ctx__, __result__ = self.__options.merge_options(baml_options).create_sync_stream(function_name="AnalyzeAndParseTable", args={
+            "compressed_text": compressed_text,
+        })
+        return baml_py.BamlSyncStream[stream_types.ParsedTable, types.ParsedTable](
+          __result__,
+          lambda x: typing.cast(stream_types.ParsedTable, x.cast_to(types, types, stream_types, True, __runtime__)),
+          lambda x: typing.cast(types.ParsedTable, x.cast_to(types, types, stream_types, False, __runtime__)),
+          __ctx__,
+        )
     def ExtractResume(self, resume: str,
         baml_options: BamlCallOptions = {},
     ) -> baml_py.BamlSyncStream[stream_types.Resume, types.Resume]:
@@ -129,6 +183,30 @@ class BamlStreamClient:
           lambda x: typing.cast(types.Resume, x.cast_to(types, types, stream_types, False, __runtime__)),
           __ctx__,
         )
+    def InterpretTable(self, compressed_text: str,schema: types.CanonicalSchema,model_name: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.BamlSyncStream[stream_types.MappedTable, types.MappedTable]:
+        __ctx__, __result__ = self.__options.merge_options(baml_options).create_sync_stream(function_name="InterpretTable", args={
+            "compressed_text": compressed_text,"schema": schema,"model_name": model_name,
+        })
+        return baml_py.BamlSyncStream[stream_types.MappedTable, types.MappedTable](
+          __result__,
+          lambda x: typing.cast(stream_types.MappedTable, x.cast_to(types, types, stream_types, True, __runtime__)),
+          lambda x: typing.cast(types.MappedTable, x.cast_to(types, types, stream_types, False, __runtime__)),
+          __ctx__,
+        )
+    def MapToCanonicalSchema(self, parsed_table: types.ParsedTable,schema: types.CanonicalSchema,model_name: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.BamlSyncStream[stream_types.MappedTable, types.MappedTable]:
+        __ctx__, __result__ = self.__options.merge_options(baml_options).create_sync_stream(function_name="MapToCanonicalSchema", args={
+            "parsed_table": parsed_table,"schema": schema,"model_name": model_name,
+        })
+        return baml_py.BamlSyncStream[stream_types.MappedTable, types.MappedTable](
+          __result__,
+          lambda x: typing.cast(stream_types.MappedTable, x.cast_to(types, types, stream_types, True, __runtime__)),
+          lambda x: typing.cast(types.MappedTable, x.cast_to(types, types, stream_types, False, __runtime__)),
+          __ctx__,
+        )
     
 
 class BamlHttpRequestClient:
@@ -137,11 +215,32 @@ class BamlHttpRequestClient:
     def __init__(self, options: DoNotUseDirectlyCallManager):
         self.__options = options
 
+    def AnalyzeAndParseTable(self, compressed_text: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="AnalyzeAndParseTable", args={
+            "compressed_text": compressed_text,
+        }, mode="request")
+        return __result__
     def ExtractResume(self, resume: str,
         baml_options: BamlCallOptions = {},
     ) -> baml_py.baml_py.HTTPRequest:
         __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="ExtractResume", args={
             "resume": resume,
+        }, mode="request")
+        return __result__
+    def InterpretTable(self, compressed_text: str,schema: types.CanonicalSchema,model_name: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="InterpretTable", args={
+            "compressed_text": compressed_text,"schema": schema,"model_name": model_name,
+        }, mode="request")
+        return __result__
+    def MapToCanonicalSchema(self, parsed_table: types.ParsedTable,schema: types.CanonicalSchema,model_name: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="MapToCanonicalSchema", args={
+            "parsed_table": parsed_table,"schema": schema,"model_name": model_name,
         }, mode="request")
         return __result__
     
@@ -152,11 +251,32 @@ class BamlHttpStreamRequestClient:
     def __init__(self, options: DoNotUseDirectlyCallManager):
         self.__options = options
 
+    def AnalyzeAndParseTable(self, compressed_text: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="AnalyzeAndParseTable", args={
+            "compressed_text": compressed_text,
+        }, mode="stream")
+        return __result__
     def ExtractResume(self, resume: str,
         baml_options: BamlCallOptions = {},
     ) -> baml_py.baml_py.HTTPRequest:
         __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="ExtractResume", args={
             "resume": resume,
+        }, mode="stream")
+        return __result__
+    def InterpretTable(self, compressed_text: str,schema: types.CanonicalSchema,model_name: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="InterpretTable", args={
+            "compressed_text": compressed_text,"schema": schema,"model_name": model_name,
+        }, mode="stream")
+        return __result__
+    def MapToCanonicalSchema(self, parsed_table: types.ParsedTable,schema: types.CanonicalSchema,model_name: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="MapToCanonicalSchema", args={
+            "parsed_table": parsed_table,"schema": schema,"model_name": model_name,
         }, mode="stream")
         return __result__
     

@@ -24,11 +24,29 @@ class LlmResponseParser:
     def __init__(self, options: DoNotUseDirectlyCallManager):
         self.__options = options
 
+    def AnalyzeAndParseTable(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> types.ParsedTable:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="AnalyzeAndParseTable", llm_response=llm_response, mode="request")
+        return typing.cast(types.ParsedTable, __result__)
+
     def ExtractResume(
         self, llm_response: str, baml_options: BamlCallOptions = {},
     ) -> types.Resume:
         __result__ = self.__options.merge_options(baml_options).parse_response(function_name="ExtractResume", llm_response=llm_response, mode="request")
         return typing.cast(types.Resume, __result__)
+
+    def InterpretTable(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> types.MappedTable:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="InterpretTable", llm_response=llm_response, mode="request")
+        return typing.cast(types.MappedTable, __result__)
+
+    def MapToCanonicalSchema(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> types.MappedTable:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="MapToCanonicalSchema", llm_response=llm_response, mode="request")
+        return typing.cast(types.MappedTable, __result__)
 
     
 
@@ -38,10 +56,28 @@ class LlmStreamParser:
     def __init__(self, options: DoNotUseDirectlyCallManager):
         self.__options = options
 
+    def AnalyzeAndParseTable(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> stream_types.ParsedTable:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="AnalyzeAndParseTable", llm_response=llm_response, mode="stream")
+        return typing.cast(stream_types.ParsedTable, __result__)
+
     def ExtractResume(
         self, llm_response: str, baml_options: BamlCallOptions = {},
     ) -> stream_types.Resume:
         __result__ = self.__options.merge_options(baml_options).parse_response(function_name="ExtractResume", llm_response=llm_response, mode="stream")
         return typing.cast(stream_types.Resume, __result__)
+
+    def InterpretTable(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> stream_types.MappedTable:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="InterpretTable", llm_response=llm_response, mode="stream")
+        return typing.cast(stream_types.MappedTable, __result__)
+
+    def MapToCanonicalSchema(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> stream_types.MappedTable:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="MapToCanonicalSchema", llm_response=llm_response, mode="stream")
+        return typing.cast(stream_types.MappedTable, __result__)
 
     

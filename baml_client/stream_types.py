@@ -23,8 +23,54 @@ class StreamState(BaseModel, typing.Generic[StreamStateValueT]):
     value: StreamStateValueT
     state: typing_extensions.Literal["Pending", "Incomplete", "Complete"]
 # #########################################################################
-# Generated classes (1)
+# Generated classes (10)
 # #########################################################################
+
+class AggregationInfo(BaseModel):
+    type: typing.Optional[types.AggregationType] = None
+    axis: typing.Optional[str] = Field(default=None, description='\'row\' or \'column\' — the axis along which aggregation runs')
+    labels: typing.List[str] = Field(description='Labels identifying aggregation rows/columns, e.g. [\'Total\', \'Grand Total\']')
+
+class CanonicalSchema(BaseModel):
+    columns: typing.List["ColumnDef"]
+    description: typing.Optional[str] = Field(default=None, description='Optional description of what this schema represents')
+
+class ColumnDef(BaseModel):
+    name: typing.Optional[str] = Field(default=None, description='Canonical column name')
+    type: typing.Optional[str] = Field(default=None, description='Expected type: string, int, float, bool, date')
+    description: typing.Optional[str] = Field(default=None, description='What this column represents')
+    aliases: typing.List[str] = Field(description='Alternative names this column may appear as in source tables')
+
+class FieldMapping(BaseModel):
+    column_name: typing.Optional[str] = Field(default=None, description='Canonical column name from the schema')
+    source: typing.Optional[str] = Field(default=None, description='Where the value came from, e.g. \'column: Vessel Name\', \'section header\', \'document title\', \'inferred from context\'')
+    rationale: typing.Optional[str] = Field(default=None, description='Brief explanation of why this mapping was chosen')
+    confidence: typing.Optional[types.Confidence] = None
+
+class HeaderInfo(BaseModel):
+    levels: typing.Optional[int] = Field(default=None, description='Number of header levels (1 for flat, >1 for hierarchical)')
+    names: typing.List[typing.List[str]] = Field(description='Header names per level, outer = level, inner = columns')
+
+class InterpretationMetadata(BaseModel):
+    model: typing.Optional[str] = Field(default=None, description='Model that produced this result, e.g. \'openai/gpt-4o\'')
+    field_mappings: typing.List["FieldMapping"] = Field(description='One entry per canonical column, explaining how it was resolved')
+    sections_detected: typing.Optional[typing.List[str]] = Field(default=None, description='Section/group labels found in the text, if any (e.g. [\'GERALDTON\', \'KWINANA\'])')
+
+class MappedRecord(BaseModel):
+    model_config = ConfigDict(extra='allow')
+
+class MappedTable(BaseModel):
+    records: typing.List["MappedRecord"] = Field(description='Mapped data records conforming to the canonical schema')
+    unmapped_columns: typing.List[str] = Field(description='Source columns that could not be mapped to any canonical column')
+    mapping_notes: typing.Optional[str] = Field(default=None, description='Notes about the mapping process, e.g. ambiguous matches or type coercion issues')
+    metadata: typing.Optional["InterpretationMetadata"] = Field(default=None, description='Metadata about the interpretation: model used, per-field mapping rationale, detected sections')
+
+class ParsedTable(BaseModel):
+    table_type: typing.Optional[types.TableType] = None
+    headers: typing.Optional["HeaderInfo"] = None
+    aggregations: typing.Optional["AggregationInfo"] = Field(default=None, description='Present only if the table contains aggregation rows/columns')
+    data_rows: typing.List[typing.List[str]] = Field(description='All data rows (excluding headers and aggregation rows). Each inner array is one row of cell values as strings.')
+    notes: typing.Optional[str] = Field(default=None, description='Any caveats or observations about the table structure')
 
 class Resume(BaseModel):
     name: typing.Optional[str] = None
