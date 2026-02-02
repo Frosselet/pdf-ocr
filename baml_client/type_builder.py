@@ -20,7 +20,7 @@ from .globals import DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_RUNTIM
 class TypeBuilder(type_builder.TypeBuilder):
     def __init__(self):
         super().__init__(classes=set(
-          ["AggregationInfo","CanonicalSchema","ColumnDef","FieldMapping","HeaderInfo","InterpretationMetadata","MappedRecord","MappedTable","ParsedTable","Resume",]
+          ["AggregationInfo","CanonicalSchema","ColumnDef","FieldMapping","HeaderInfo","InferredTableSchema","InterpretationMetadata","MappedRecord","MappedTable","ParsedTable","Resume",]
         ), enums=set(
           ["AggregationType","Confidence","TableType",]
         ), runtime=DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_RUNTIME)
@@ -43,7 +43,7 @@ class TypeBuilder(type_builder.TypeBuilder):
 
 
     # #########################################################################
-    # Generated classes 10
+    # Generated classes 11
     # #########################################################################
 
     @property
@@ -65,6 +65,10 @@ class TypeBuilder(type_builder.TypeBuilder):
     @property
     def HeaderInfo(self) -> "HeaderInfoViewer":
         return HeaderInfoViewer(self)
+
+    @property
+    def InferredTableSchema(self) -> "InferredTableSchemaViewer":
+        return InferredTableSchemaViewer(self)
 
     @property
     def InterpretationMetadata(self) -> "InterpretationMetadataViewer":
@@ -256,7 +260,7 @@ class TableTypeValues:
 
 
 # #########################################################################
-# Generated classes 10
+# Generated classes 11
 # #########################################################################
 
 class AggregationInfoAst:
@@ -490,6 +494,57 @@ class HeaderInfoProperties:
     @property
     def names(self) -> type_builder.ClassPropertyViewer:
         return type_builder.ClassPropertyViewer(self.__bldr.property("names"))
+    
+    
+
+
+class InferredTableSchemaAst:
+    def __init__(self, tb: type_builder.TypeBuilder):
+        _tb = tb._tb # type: ignore (we know how to use this private attribute)
+        self._bldr = _tb.class_("InferredTableSchema")
+        self._properties: typing.Set[str] = set([  "column_names",  "column_count",  "header_levels",  "notes",  ])
+        self._props = InferredTableSchemaProperties(self._bldr, self._properties)
+
+    def type(self) -> baml_py.FieldType:
+        return self._bldr.field()
+
+    @property
+    def props(self) -> "InferredTableSchemaProperties":
+        return self._props
+
+
+class InferredTableSchemaViewer(InferredTableSchemaAst):
+    def __init__(self, tb: type_builder.TypeBuilder):
+        super().__init__(tb)
+
+    
+    def list_properties(self) -> typing.List[typing.Tuple[str, type_builder.ClassPropertyViewer]]:
+        return [(name, type_builder.ClassPropertyViewer(self._bldr.property(name))) for name in self._properties]
+    
+
+
+class InferredTableSchemaProperties:
+    def __init__(self, bldr: baml_py.ClassBuilder, properties: typing.Set[str]):
+        self.__bldr = bldr
+        self.__properties = properties # type: ignore (we know how to use this private attribute) # noqa: F821
+
+    
+    
+    @property
+    def column_names(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("column_names"))
+    
+    @property
+    def column_count(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("column_count"))
+    
+    @property
+    def header_levels(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("header_levels"))
+    
+    @property
+    def notes(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("notes"))
     
     
 

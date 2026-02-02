@@ -62,7 +62,7 @@ class TableType(str, Enum):
     Unknown = "Unknown"
 
 # #########################################################################
-# Generated classes (10)
+# Generated classes (11)
 # #########################################################################
 
 class AggregationInfo(BaseModel):
@@ -89,6 +89,12 @@ class FieldMapping(BaseModel):
 class HeaderInfo(BaseModel):
     levels: int = Field(description='Number of header levels (1 for flat, >1 for hierarchical)')
     names: typing.List[typing.List[str]] = Field(description='Header names per level, outer = level, inner = columns')
+
+class InferredTableSchema(BaseModel):
+    column_names: typing.List[str] = Field(description='Column headers as they visually appear in the table, left to right. For multi-line headers, combine stacked labels into a single name per column (e.g. \'Date / Arrival\' or \'Quantity MT\').')
+    column_count: int = Field(description='Total number of data columns')
+    header_levels: int = Field(description='Number of header rows (1 for flat, >1 for stacked/multi-line headers)')
+    notes: typing.Optional[str] = Field(default=None, description='Observations about the header structure: merged cells, stacked labels, visual groupings, etc.')
 
 class InterpretationMetadata(BaseModel):
     model: str = Field(description='Model that produced this result, e.g. \'openai/gpt-4o\'')

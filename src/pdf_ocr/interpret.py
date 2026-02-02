@@ -2,8 +2,11 @@
 and map it to a user-defined canonical schema.
 
 Provides both sync and async APIs. Multi-page compressed text (pages joined by
-form-feed ``\\f``) is automatically split and processed page-by-page, then merged
-into a single result.
+form-feed ``\\f``) is automatically split and processed page-by-page.
+
+``interpret_table()`` returns ``dict[int, MappedTable]`` keyed by 1-indexed page
+number — each page gets its own records, unmapped columns, mapping notes, and
+metadata.  Records contain only canonical schema fields.
 
 Sync usage::
 
@@ -15,8 +18,10 @@ Sync usage::
         ColumnDef("vessel_name", "string", "Name of the vessel", aliases=["Ship Name"]),
     ])
     result = interpret_table(compressed, schema, model="openai/gpt-4o")
-    for r in to_records(result):
+    for r in to_records(result):        # flat list across all pages
         print(r)
+    for page, mt in result.items():     # per-page access
+        print(f"Page {page}: {len(mt.records)} records")
 
 Async usage (explicit parallel control across pre-split tables)::
 
@@ -37,6 +42,7 @@ from baml_client import types as baml_types
 from baml_client.sync_client import b as b_sync
 from baml_client.async_client import b as b_async
 from baml_client.type_builder import TypeBuilder
+from baml_py import Image
 
 DEFAULT_MODEL = "openai/gpt-4o"
 
@@ -137,6 +143,37 @@ def _to_baml_schema(schema: CanonicalSchema) -> baml_types.CanonicalSchema:
     )
 
 
+def _render_page_images(
+    pdf_path: str,
+    pages: list[int] | None = None,
+    dpi: int = 150,
+) -> list[str]:
+    """Render PDF pages to base64-encoded PNG strings.
+
+    Args:
+        pdf_path: Path to the PDF file.
+        pages: 0-based page indices. None = all pages.
+        dpi: Resolution for rendering (default 150 — good balance of quality/size).
+
+    Returns:
+        List of base64-encoded PNG strings, one per page.
+    """
+    import base64
+    import fitz
+
+    doc = fitz.open(pdf_path)
+    indices = pages if pages is not None else list(range(doc.page_count))
+    images = []
+    zoom = dpi / 72.0
+    mat = fitz.Matrix(zoom, zoom)
+    for idx in indices:
+        pix = doc[idx].get_pixmap(matrix=mat)
+        png_bytes = pix.tobytes("png")
+        images.append(base64.b64encode(png_bytes).decode("ascii"))
+    doc.close()
+    return images
+
+
 @dataclass
 class _Batch:
     """A subset of a ParsedTable's data rows for batched step-2 processing."""
@@ -147,38 +184,45 @@ class _Batch:
     notes: str | None  # Notes with batch-local row indices
 
 
-def to_records(mapped_table: baml_types.MappedTable) -> list[dict]:
-    """Convert a MappedTable into a list of plain dicts.
+def to_records(
+    result: dict[int, baml_types.MappedTable] | baml_types.MappedTable,
+) -> list[dict]:
+    """Convert interpretation result into a flat list of plain dicts.
 
-    Dynamic fields on MappedRecord are stored in pydantic's ``model_extra``,
-    since the BAML class uses ``@@dynamic`` (``extra='allow'``).
+    Accepts either:
+    - ``dict[int, MappedTable]`` (page-keyed result from ``interpret_table``)
+    - A single ``MappedTable`` (from lower-level functions)
 
-    Internal metadata fields (``_page``, etc.) are stripped so the output
-    contains only canonical schema columns.  Use :func:`to_records_by_page`
-    to access page-grouped records.
+    Records contain only canonical schema columns (no internal metadata).
     """
-    results = []
-    for rec in mapped_table.records:
-        d = {k: v for k, v in rec.model_dump().items() if not k.startswith("_")}
-        results.append(d)
-    return results
+    if isinstance(result, dict):
+        tables = [result[k] for k in sorted(result)]
+    else:
+        tables = [result]
+    records = []
+    for mt in tables:
+        for rec in mt.records:
+            records.append(rec.model_dump())
+    return records
 
 
-def to_records_by_page(mapped_table: baml_types.MappedTable) -> dict[int, list[dict]]:
-    """Convert a MappedTable into a dict of ``{page_number: [records]}``.
+def to_records_by_page(
+    result: dict[int, baml_types.MappedTable] | baml_types.MappedTable,
+) -> dict[int, list[dict]]:
+    """Convert interpretation result into ``{page_number: [records]}``.
 
-    Each record is a plain dict containing only canonical schema columns
-    (internal metadata fields are stripped).  Page numbers are 1-indexed.
+    Accepts either:
+    - ``dict[int, MappedTable]`` (page-keyed result from ``interpret_table``)
+    - A single ``MappedTable`` (grouped under page ``1``)
 
-    Records without a ``_page`` field are grouped under page ``0``.
+    Page numbers are 1-indexed.  Records contain only canonical schema columns.
     """
-    by_page: dict[int, list[dict]] = {}
-    for rec in mapped_table.records:
-        raw = rec.model_dump()
-        page = raw.get("_page", 0)
-        d = {k: v for k, v in raw.items() if not k.startswith("_")}
-        by_page.setdefault(page, []).append(d)
-    return by_page
+    if isinstance(result, dict):
+        return {
+            page: [rec.model_dump() for rec in mt.records]
+            for page, mt in sorted(result.items())
+        }
+    return {1: [rec.model_dump() for rec in result.records]}
 
 
 # ─── Async runner helper ─────────────────────────────────────────────────────
@@ -204,7 +248,7 @@ def _run_async(coro):
         return pool.submit(asyncio.run, coro).result()
 
 
-# ─── Batching helpers ─────────────────────────────────────────────────────────
+# ─── Section boundary detection & validation ─────────────────────────────────
 
 
 _SECTION_RE = re.compile(
@@ -226,6 +270,140 @@ def _parse_section_boundaries(
     if not matches:
         return None
     return [(label.strip(), int(start), int(end)) for label, start, end in matches]
+
+
+def _detect_sections_from_text(
+    compressed_text: str,
+) -> list[tuple[str, int]] | None:
+    """Count data rows per section by analysing pipe-table structure.
+
+    Walks through the compressed text looking for the repeating pattern::
+
+        SECTION_HEADER          (non-pipe, no tabs)
+        sub-headers / blanks
+        |---|---|...|           (pipe separator)
+        |data row 1|           (data rows — first cell non-empty)
+        ...
+        ||...|total|...|       (aggregation row — first cell empty)
+
+    Returns ``[(section_label, data_row_count), ...]`` or ``None`` when
+    fewer than 2 sections are found.
+    """
+    lines = compressed_text.split("\n")
+    sections: list[tuple[str, int]] = []
+    last_header: str | None = None
+    in_data = False
+    pipe_rows: list[str] = []
+
+    def _flush() -> None:
+        nonlocal pipe_rows
+        if last_header and pipe_rows:
+            n = len(pipe_rows)
+            # Last pipe row with empty first cell is aggregation
+            if n > 1 and pipe_rows[-1].startswith("||"):
+                n -= 1
+            if n > 0:
+                sections.append((last_header, n))
+        pipe_rows = []
+
+    for line in lines:
+        s = line.strip()
+        if s.startswith("|---"):
+            in_data = True
+            pipe_rows = []
+            continue
+        if in_data:
+            if s.startswith("|") and s:
+                pipe_rows.append(s)
+            else:
+                _flush()
+                in_data = False
+                if s and not s.startswith("|") and "\t" not in s:
+                    last_header = s
+        else:
+            if s and not s.startswith("|") and "\t" not in s:
+                last_header = s
+
+    if in_data:
+        _flush()
+
+    return sections if len(sections) >= 2 else None
+
+
+def _validate_section_boundaries(
+    notes: str | None,
+    total_data_rows: int,
+    compressed_text: str,
+) -> str | None:
+    """Cross-reference LLM section boundaries with the compressed text.
+
+    Counts pipe-table data rows per section directly from the text
+    (deterministic) and, when the sum matches *total_data_rows*, rebuilds
+    the notes with corrected boundaries.  Falls back to the original
+    *notes* when validation cannot be performed.
+    """
+    detected = _detect_sections_from_text(compressed_text)
+    if detected is None:
+        return notes
+
+    llm_sections = _parse_section_boundaries(notes)
+
+    # Build matched list: (label, row_count) using detected counts
+    if llm_sections is not None and len(llm_sections) == len(detected):
+        # Same section count — use LLM labels with detected row counts
+        matched = [
+            (label, det_count)
+            for (label, _, _), (_, det_count) in zip(llm_sections, detected)
+        ]
+    elif llm_sections is not None:
+        # Different counts — try ordered label prefix matching
+        matched = []
+        det_idx = 0
+        for label, _s, _e in llm_sections:
+            label_up = label.upper().strip()
+            found = False
+            while det_idx < len(detected):
+                det_up = detected[det_idx][0].upper().strip()
+                if det_up.startswith(label_up) or label_up.startswith(det_up):
+                    matched.append((label, detected[det_idx][1]))
+                    det_idx += 1
+                    found = True
+                    break
+                det_idx += 1
+            if not found:
+                matched.append((label, _e - _s + 1))
+    else:
+        # LLM produced no sections — use detected labels and counts
+        matched = list(detected)
+
+    # Verify sum matches total data rows
+    detected_sum = sum(c for _, c in matched)
+    if detected_sum != total_data_rows:
+        log.debug(
+            "Section validation: detected sum=%d != total_data_rows=%d, keeping original",
+            detected_sum,
+            total_data_rows,
+        )
+        return notes
+
+    # Rebuild notes with correct boundaries
+    parts = []
+    start = 0
+    for label, count in matched:
+        end = start + count - 1
+        parts.append(f"{label} (rows {start}-{end})")
+        start = end + 1
+
+    section_str = "Sections: " + ", ".join(parts)
+
+    # Preserve non-section content from original notes
+    if notes:
+        non_section = _SECTION_RE.sub("", notes)
+        non_section = re.sub(r"Sections?\s*:\s*", "", non_section)
+        non_section = re.sub(r"^[\s,;]+|[\s,;]+$", "", non_section)
+        if non_section:
+            return f"{section_str}; {non_section}"
+    return section_str
 
 
 def _build_batch_notes(
@@ -261,8 +439,7 @@ def _build_batch_notes(
         non_section = _SECTION_RE.sub("", original_notes)
         # Clean up leftover "Sections:" prefix and separators
         non_section = re.sub(r"Sections?\s*:\s*", "", non_section)
-        non_section = re.sub(r"[,;]\s*$", "", non_section).strip()
-        non_section = re.sub(r"^[,;]\s*", "", non_section).strip()
+        non_section = re.sub(r"^[\s,;]+|[\s,;]+$", "", non_section)
 
     parts: list[str] = []
     if relevant:
@@ -397,11 +574,6 @@ def _sub_parsed_table(
     )
 
 
-def _stamp_page_number(record: baml_types.MappedRecord, page: int) -> None:
-    """Write ``_page`` (1-indexed) into a MappedRecord's extra fields."""
-    record.__pydantic_extra__["_page"] = page
-
-
 # ─── Page splitting & merging ─────────────────────────────────────────────────
 
 
@@ -412,42 +584,30 @@ def _split_pages(compressed_text: str, page_separator: str = "\f") -> list[str]:
     return [p for p in compressed_text.split(page_separator) if p.strip()]
 
 
-def _merge_mapped_tables(
-    results: list[baml_types.MappedTable],
-    page_numbers: list[int] | None = None,
-) -> baml_types.MappedTable:
-    """Combine multiple per-page/batch MappedTable results into one.
+def _merge_mapped_tables(tables: list[baml_types.MappedTable]) -> baml_types.MappedTable:
+    """Merge multiple MappedTable results (e.g. batches) into one.
 
     - **records**: concatenated from all tables
     - **unmapped_columns**: union, deduplicated, preserving first-seen order
     - **mapping_notes**: non-None notes joined with ``"; "``
     - **metadata**: ``field_mappings`` from the first result; ``sections_detected``
       merged from all results (deduplicated, preserving order)
-
-    When *page_numbers* is provided it must align 1:1 with *results*.  Each
-    record in ``results[i]`` gets ``_page = page_numbers[i]`` stamped into its
-    extra fields before concatenation.
     """
     all_records = []
     seen_unmapped: dict[str, None] = {}
     notes_parts: list[str] = []
 
-    for idx, mt in enumerate(results):
-        if page_numbers is not None:
-            page = page_numbers[idx]
-            for rec in mt.records:
-                _stamp_page_number(rec, page)
+    for mt in tables:
         all_records.extend(mt.records)
         for col in mt.unmapped_columns:
             seen_unmapped.setdefault(col, None)
         if mt.mapping_notes is not None:
             notes_parts.append(mt.mapping_notes)
 
-    # Merge metadata
-    first_meta = results[0].metadata
+    first_meta = tables[0].metadata
     merged_sections: list[str] | None = None
     seen_sections: dict[str, None] = {}
-    for mt in results:
+    for mt in tables:
         if mt.metadata.sections_detected:
             if merged_sections is None:
                 merged_sections = []
@@ -470,6 +630,26 @@ def _merge_mapped_tables(
     )
 
 
+def _group_by_page(
+    results: list[baml_types.MappedTable],
+    page_numbers: list[int],
+) -> dict[int, baml_types.MappedTable]:
+    """Group batch results by page number, merging batches within each page.
+
+    *results* and *page_numbers* are aligned 1:1.  Returns a dict keyed by
+    1-indexed page number, where each value is a single MappedTable containing
+    all records for that page.
+    """
+    from collections import defaultdict
+    page_batches: dict[int, list[baml_types.MappedTable]] = defaultdict(list)
+    for mt, page in zip(results, page_numbers):
+        page_batches[page].append(mt)
+    return {
+        page: _merge_mapped_tables(batches) if len(batches) > 1 else batches[0]
+        for page, batches in sorted(page_batches.items())
+    }
+
+
 # ─── Batched async orchestrator ────────────────────────────────────────────────
 
 
@@ -480,27 +660,86 @@ async def _interpret_pages_batched_async(
     batch_size: int = 20,
     model: str = DEFAULT_MODEL,
     fallback_model: str | None = None,
-) -> tuple[list[baml_types.MappedTable], list[int]]:
+    page_images: list[str] | None = None,
+    vision_model: str | None = None,
+) -> dict[int, baml_types.MappedTable]:
     """Concurrently run the 2-step pipeline with step-2 batching.
 
-    Returns ``(mapped_results, page_numbers)`` where *page_numbers* aligns
-    1:1 with *mapped_results* — multiple batches from the same page share
-    the same 1-indexed page number.
+    Returns a dict keyed by 1-indexed page number, where each value is a
+    ``MappedTable`` containing all records for that page (batches merged).
+
+    When *page_images* is provided, a vision-based schema inference step
+    (step 0) runs first, and step 1 uses the guided variant that splits
+    concatenated values based on the inferred column structure.
     """
+    effective_vision_model = vision_model or model
+
+    # Step 0 (optional): infer visual schemas concurrently
+    visual_schemas: list[baml_types.InferredTableSchema] | None = None
+    if page_images is not None:
+        visual_schemas = list(await asyncio.gather(
+            *(
+                infer_table_schema_from_image_async(
+                    img, page, model=effective_vision_model
+                )
+                for img, page in zip(page_images, pages)
+            )
+        ))
+        for pi, vs in enumerate(visual_schemas):
+            log.info(
+                "Step 0 page %d: inferred %d columns: %s",
+                pi + 1, vs.column_count, vs.column_names,
+            )
+
     # Step 1: parse all pages concurrently
-    parsed_tables = await asyncio.gather(
-        *(
-            analyze_and_parse_async(page, model=model, fallback_model=fallback_model)
-            for page in pages
-        )
-    )
+    if visual_schemas is not None:
+        parsed_tables = list(await asyncio.gather(
+            *(
+                analyze_and_parse_guided_async(
+                    page, vs, model=model, fallback_model=fallback_model
+                )
+                for page, vs in zip(pages, visual_schemas)
+            )
+        ))
+    else:
+        parsed_tables = list(await asyncio.gather(
+            *(
+                analyze_and_parse_async(page, model=model, fallback_model=fallback_model)
+                for page in pages
+            )
+        ))
 
     for pi, pt in enumerate(parsed_tables):
         log.info(
-            "Step 1 page %d: parsed %d data rows",
+            "Step 1 page %d: parsed %d data rows, %d header levels, type=%s",
             pi + 1,
             len(pt.data_rows),
+            pt.headers.levels,
+            pt.table_type,
         )
+        for lvl, names in enumerate(pt.headers.names):
+            log.info("  Step 1 page %d headers[%d]: %s", pi + 1, lvl, names)
+        if pt.data_rows:
+            log.info("  Step 1 page %d row[0] (%d cells): %s", pi + 1, len(pt.data_rows[0]), pt.data_rows[0])
+
+    # Validate section boundaries against compressed text
+    for pi, pt in enumerate(parsed_tables):
+        corrected = _validate_section_boundaries(
+            pt.notes, len(pt.data_rows), pages[pi]
+        )
+        if corrected != pt.notes:
+            log.info(
+                "Step 1 page %d: corrected section boundaries: %s",
+                pi + 1,
+                corrected,
+            )
+            parsed_tables[pi] = baml_types.ParsedTable(
+                table_type=pt.table_type,
+                headers=pt.headers,
+                aggregations=pt.aggregations,
+                data_rows=pt.data_rows,
+                notes=corrected,
+            )
 
     # Create batches for all pages
     all_batches: list[_Batch] = []
@@ -541,10 +780,9 @@ async def _interpret_pages_batched_async(
                 actual,
             )
 
-    # Build page_numbers list aligned 1:1 with mapped_tables
+    # Group batch results by page
     page_numbers = [b.page_index + 1 for b in all_batches]  # 1-indexed
-
-    return list(mapped_tables), page_numbers
+    return _group_by_page(list(mapped_tables), page_numbers)
 
 
 # ─── Sync API ─────────────────────────────────────────────────────────────────
@@ -570,6 +808,38 @@ def analyze_and_parse(
             raise
         log.warning("Primary model %r failed for AnalyzeAndParseTable, falling back to %r", model, fallback_model)
         return b_sync.AnalyzeAndParseTable(compressed_text, {"client": fallback_model})
+
+
+def infer_table_schema_from_image(
+    page_image_b64: str,
+    compressed_text: str,
+    *,
+    model: str = DEFAULT_MODEL,
+) -> baml_types.InferredTableSchema:
+    """Infer table column structure from a page image (vision step)."""
+    img = Image.from_base64("image/png", page_image_b64)
+    return b_sync.InferTableSchemaFromImage(img, compressed_text, {"client": model})
+
+
+def analyze_and_parse_guided(
+    compressed_text: str,
+    visual_schema: baml_types.InferredTableSchema,
+    *,
+    model: str = DEFAULT_MODEL,
+    fallback_model: str | None = None,
+) -> baml_types.ParsedTable:
+    """Step 1 guided by visual schema (for garbled-header PDFs)."""
+    try:
+        return b_sync.AnalyzeAndParseTableGuided(
+            compressed_text, visual_schema, {"client": model}
+        )
+    except Exception:
+        if fallback_model is None:
+            raise
+        log.warning("Primary model %r failed for guided parse, falling back to %r", model, fallback_model)
+        return b_sync.AnalyzeAndParseTableGuided(
+            compressed_text, visual_schema, {"client": fallback_model}
+        )
 
 
 def map_to_schema(
@@ -610,19 +880,27 @@ def interpret_table(
     fallback_model: str | None = None,
     page_separator: str = "\f",
     batch_size: int = 20,
-) -> baml_types.MappedTable:
+    pdf_path: str | None = None,
+    vision_model: str | None = None,
+) -> dict[int, baml_types.MappedTable]:
     """Full 2-step pipeline: analyze+parse, then map to schema.
 
     Multi-page input (pages joined by *page_separator*) is automatically split
-    and all pages are processed concurrently via ``asyncio.gather()``, then
-    results are merged.
+    and all pages are processed concurrently via ``asyncio.gather()``.
+
+    Returns a dict keyed by 1-indexed page number, where each value is a
+    ``MappedTable`` containing that page's records, unmapped columns, mapping
+    notes, and metadata.  Records contain only canonical schema fields.
 
     Step 2 (schema mapping) is batched: each page's parsed rows are split into
     chunks of *batch_size* rows so the LLM can produce complete output without
-    truncation.  All batches across all pages run concurrently.
+    truncation.  All batches across all pages run concurrently, then batches
+    are merged per-page.
 
-    Each output record carries a ``_page`` extra field (1-indexed) indicating
-    which source page it originated from.
+    When *pdf_path* is provided, a vision-based schema inference step runs
+    before step 1: each page is rendered as an image and a vision-capable LLM
+    infers the correct column structure.  Step 1 then uses a guided variant
+    that splits concatenated values based on the inferred schema.
 
     Args:
         compressed_text: Compressed text from ``compress_spatial_text()``.
@@ -631,33 +909,53 @@ def interpret_table(
         fallback_model: If set, retry each step with this model on failure.
         page_separator: Delimiter between pages (default ``"\\f"``).
         batch_size: Maximum data rows per step-2 LLM call (default 20).
+        pdf_path: Path to the original PDF. When provided, enables vision-based
+            schema inference (step 0) and guided parsing (step 1).
+        vision_model: LLM to use for vision step 0. Defaults to *model*.
     """
     pages = _split_pages(compressed_text, page_separator)
 
-    if len(pages) == 1:
+    # Render page images when vision is enabled
+    page_images: list[str] | None = None
+    if pdf_path is not None:
+        log.info("Vision enabled: rendering %d page(s) from %s", len(pages), pdf_path)
+        page_images = _render_page_images(pdf_path, pages=list(range(len(pages))))
+
+    if len(pages) == 1 and page_images is None:
+        # Fast path: single page, no vision — try fully sync
         parsed = analyze_and_parse(pages[0], model=model, fallback_model=fallback_model)
+        # Validate section boundaries against compressed text
+        corrected = _validate_section_boundaries(
+            parsed.notes, len(parsed.data_rows), pages[0]
+        )
+        if corrected != parsed.notes:
+            log.info("Section boundaries corrected: %s", corrected)
+            parsed = baml_types.ParsedTable(
+                table_type=parsed.table_type,
+                headers=parsed.headers,
+                aggregations=parsed.aggregations,
+                data_rows=parsed.data_rows,
+                notes=corrected,
+            )
         batches = _create_batches(parsed, page_index=0, batch_size=batch_size)
         if len(batches) == 1:
             # Fast path: single page, fits in one batch — sync, no event loop
             result = map_to_schema(parsed, schema, model=model, fallback_model=fallback_model)
-            for rec in result.records:
-                _stamp_page_number(rec, 1)
-            return result
+            return {1: result}
         # Single page but multiple batches — need async for concurrency
-        results, page_numbers = _run_async(
+        return _run_async(
             _interpret_pages_batched_async(
                 pages, schema, batch_size=batch_size, model=model, fallback_model=fallback_model
             )
         )
-        return _merge_mapped_tables(results, page_numbers=page_numbers)
 
-    # Multiple pages → batched concurrent processing
-    results, page_numbers = _run_async(
+    # Multiple pages or vision enabled → batched concurrent processing
+    return _run_async(
         _interpret_pages_batched_async(
-            pages, schema, batch_size=batch_size, model=model, fallback_model=fallback_model
+            pages, schema, batch_size=batch_size, model=model, fallback_model=fallback_model,
+            page_images=page_images, vision_model=vision_model,
         )
     )
-    return _merge_mapped_tables(results, page_numbers=page_numbers)
 
 
 def interpret_table_single_shot(
@@ -667,13 +965,15 @@ def interpret_table_single_shot(
     model: str = DEFAULT_MODEL,
     fallback_model: str | None = None,
     page_separator: str = "\f",
-) -> baml_types.MappedTable:
+) -> dict[int, baml_types.MappedTable]:
     """Single-shot: analyze, parse, and map in one LLM call.
 
     Multi-page input (pages joined by *page_separator*) is automatically split
-    and all pages are processed concurrently via ``asyncio.gather()``, then
-    results are merged.  Single-page input is processed synchronously without
-    an event loop.
+    and all pages are processed concurrently via ``asyncio.gather()``.
+    Single-page input is processed synchronously without an event loop.
+
+    Returns a dict keyed by 1-indexed page number, where each value is a
+    ``MappedTable`` for that page.
 
     .. warning::
 
@@ -695,22 +995,23 @@ def interpret_table_single_shot(
         tb = _build_type_builder(schema)
         baml_schema = _to_baml_schema(schema)
         try:
-            return b_sync.InterpretTable(
+            result = b_sync.InterpretTable(
                 pages[0], baml_schema, model, {"tb": tb, "client": model}
             )
         except Exception:
             if fallback_model is None:
                 raise
             log.warning("Primary model %r failed for InterpretTable, falling back to %r", model, fallback_model)
-            return b_sync.InterpretTable(
+            result = b_sync.InterpretTable(
                 pages[0], baml_schema, fallback_model, {"tb": tb, "client": fallback_model}
             )
+        return {1: result}
 
     # Multiple pages → run all concurrently via the async BAML client
     results = _run_async(
         _interpret_pages_single_shot_async(pages, schema, model=model, fallback_model=fallback_model)
     )
-    return _merge_mapped_tables(results)
+    return {i + 1: mt for i, mt in enumerate(results)}
 
 
 # ─── Async API ────────────────────────────────────────────────────────────────
@@ -793,6 +1094,38 @@ async def analyze_and_parse_async(
             raise
         log.warning("Primary model %r failed for AnalyzeAndParseTable, falling back to %r", model, fallback_model)
         return await b_async.AnalyzeAndParseTable(compressed_text, {"client": fallback_model})
+
+
+async def infer_table_schema_from_image_async(
+    page_image_b64: str,
+    compressed_text: str,
+    *,
+    model: str = DEFAULT_MODEL,
+) -> baml_types.InferredTableSchema:
+    """Async: infer table column structure from a page image."""
+    img = Image.from_base64("image/png", page_image_b64)
+    return await b_async.InferTableSchemaFromImage(img, compressed_text, {"client": model})
+
+
+async def analyze_and_parse_guided_async(
+    compressed_text: str,
+    visual_schema: baml_types.InferredTableSchema,
+    *,
+    model: str = DEFAULT_MODEL,
+    fallback_model: str | None = None,
+) -> baml_types.ParsedTable:
+    """Async: step 1 guided by visual schema (for garbled-header PDFs)."""
+    try:
+        return await b_async.AnalyzeAndParseTableGuided(
+            compressed_text, visual_schema, {"client": model}
+        )
+    except Exception:
+        if fallback_model is None:
+            raise
+        log.warning("Primary model %r failed for guided parse, falling back to %r", model, fallback_model)
+        return await b_async.AnalyzeAndParseTableGuided(
+            compressed_text, visual_schema, {"client": fallback_model}
+        )
 
 
 async def map_to_schema_async(

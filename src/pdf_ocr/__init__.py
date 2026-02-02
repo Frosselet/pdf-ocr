@@ -4,6 +4,7 @@ from pdf_ocr.compress import compress_spatial_text
 from pdf_ocr.interpret import (
     CanonicalSchema,
     ColumnDef,
+    infer_table_schema_from_image,
     interpret_table,
     interpret_table_single_shot,
     interpret_tables_async,
@@ -16,6 +17,7 @@ __all__ = [
     "CanonicalSchema",
     "ColumnDef",
     "compress_spatial_text",
+    "infer_table_schema_from_image",
     "interpret_table",
     "interpret_table_single_shot",
     "interpret_tables_async",

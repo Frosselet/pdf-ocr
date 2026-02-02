@@ -31,6 +31,9 @@ type_map = {
     "types.HeaderInfo": types.HeaderInfo,
     "stream_types.HeaderInfo": stream_types.HeaderInfo,
 
+    "types.InferredTableSchema": types.InferredTableSchema,
+    "stream_types.InferredTableSchema": stream_types.InferredTableSchema,
+
     "types.InterpretationMetadata": types.InterpretationMetadata,
     "stream_types.InterpretationMetadata": stream_types.InterpretationMetadata,
 

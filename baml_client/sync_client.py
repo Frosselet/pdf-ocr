@@ -108,6 +108,20 @@ class BamlSyncClient:
                 "compressed_text": compressed_text,
             })
             return typing.cast(types.ParsedTable, __result__.cast_to(types, types, stream_types, False, __runtime__))
+    def AnalyzeAndParseTableGuided(self, compressed_text: str,visual_schema: types.InferredTableSchema,
+        baml_options: BamlCallOptions = {},
+    ) -> types.ParsedTable:
+        # Check if on_tick is provided
+        if 'on_tick' in baml_options:
+            __stream__ = self.stream.AnalyzeAndParseTableGuided(compressed_text=compressed_text,visual_schema=visual_schema,
+                baml_options=baml_options)
+            return __stream__.get_final_response()
+        else:
+            # Original non-streaming code
+            __result__ = self.__options.merge_options(baml_options).call_function_sync(function_name="AnalyzeAndParseTableGuided", args={
+                "compressed_text": compressed_text,"visual_schema": visual_schema,
+            })
+            return typing.cast(types.ParsedTable, __result__.cast_to(types, types, stream_types, False, __runtime__))
     def ExtractResume(self, resume: str,
         baml_options: BamlCallOptions = {},
     ) -> types.Resume:
@@ -122,6 +136,20 @@ class BamlSyncClient:
                 "resume": resume,
             })
             return typing.cast(types.Resume, __result__.cast_to(types, types, stream_types, False, __runtime__))
+    def InferTableSchemaFromImage(self, page_img: baml_py.Image,compressed_text: str,
+        baml_options: BamlCallOptions = {},
+    ) -> types.InferredTableSchema:
+        # Check if on_tick is provided
+        if 'on_tick' in baml_options:
+            __stream__ = self.stream.InferTableSchemaFromImage(page_img=page_img,compressed_text=compressed_text,
+                baml_options=baml_options)
+            return __stream__.get_final_response()
+        else:
+            # Original non-streaming code
+            __result__ = self.__options.merge_options(baml_options).call_function_sync(function_name="InferTableSchemaFromImage", args={
+                "page_img": page_img,"compressed_text": compressed_text,
+            })
+            return typing.cast(types.InferredTableSchema, __result__.cast_to(types, types, stream_types, False, __runtime__))
     def InterpretTable(self, compressed_text: str,schema: types.CanonicalSchema,model_name: str,
         baml_options: BamlCallOptions = {},
     ) -> types.MappedTable:
@@ -171,6 +199,18 @@ class BamlStreamClient:
           lambda x: typing.cast(types.ParsedTable, x.cast_to(types, types, stream_types, False, __runtime__)),
           __ctx__,
         )
+    def AnalyzeAndParseTableGuided(self, compressed_text: str,visual_schema: types.InferredTableSchema,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.BamlSyncStream[stream_types.ParsedTable, types.ParsedTable]:
+        __ctx__, __result__ = self.__options.merge_options(baml_options).create_sync_stream(function_name="AnalyzeAndParseTableGuided", args={
+            "compressed_text": compressed_text,"visual_schema": visual_schema,
+        })
+        return baml_py.BamlSyncStream[stream_types.ParsedTable, types.ParsedTable](
+          __result__,
+          lambda x: typing.cast(stream_types.ParsedTable, x.cast_to(types, types, stream_types, True, __runtime__)),
+          lambda x: typing.cast(types.ParsedTable, x.cast_to(types, types, stream_types, False, __runtime__)),
+          __ctx__,
+        )
     def ExtractResume(self, resume: str,
         baml_options: BamlCallOptions = {},
     ) -> baml_py.BamlSyncStream[stream_types.Resume, types.Resume]:
@@ -181,6 +221,18 @@ class BamlStreamClient:
           __result__,
           lambda x: typing.cast(stream_types.Resume, x.cast_to(types, types, stream_types, True, __runtime__)),
           lambda x: typing.cast(types.Resume, x.cast_to(types, types, stream_types, False, __runtime__)),
+          __ctx__,
+        )
+    def InferTableSchemaFromImage(self, page_img: baml_py.Image,compressed_text: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.BamlSyncStream[stream_types.InferredTableSchema, types.InferredTableSchema]:
+        __ctx__, __result__ = self.__options.merge_options(baml_options).create_sync_stream(function_name="InferTableSchemaFromImage", args={
+            "page_img": page_img,"compressed_text": compressed_text,
+        })
+        return baml_py.BamlSyncStream[stream_types.InferredTableSchema, types.InferredTableSchema](
+          __result__,
+          lambda x: typing.cast(stream_types.InferredTableSchema, x.cast_to(types, types, stream_types, True, __runtime__)),
+          lambda x: typing.cast(types.InferredTableSchema, x.cast_to(types, types, stream_types, False, __runtime__)),
           __ctx__,
         )
     def InterpretTable(self, compressed_text: str,schema: types.CanonicalSchema,model_name: str,
@@ -222,11 +274,25 @@ class BamlHttpRequestClient:
             "compressed_text": compressed_text,
         }, mode="request")
         return __result__
+    def AnalyzeAndParseTableGuided(self, compressed_text: str,visual_schema: types.InferredTableSchema,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="AnalyzeAndParseTableGuided", args={
+            "compressed_text": compressed_text,"visual_schema": visual_schema,
+        }, mode="request")
+        return __result__
     def ExtractResume(self, resume: str,
         baml_options: BamlCallOptions = {},
     ) -> baml_py.baml_py.HTTPRequest:
         __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="ExtractResume", args={
             "resume": resume,
+        }, mode="request")
+        return __result__
+    def InferTableSchemaFromImage(self, page_img: baml_py.Image,compressed_text: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="InferTableSchemaFromImage", args={
+            "page_img": page_img,"compressed_text": compressed_text,
         }, mode="request")
         return __result__
     def InterpretTable(self, compressed_text: str,schema: types.CanonicalSchema,model_name: str,
@@ -258,11 +324,25 @@ class BamlHttpStreamRequestClient:
             "compressed_text": compressed_text,
         }, mode="stream")
         return __result__
+    def AnalyzeAndParseTableGuided(self, compressed_text: str,visual_schema: types.InferredTableSchema,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="AnalyzeAndParseTableGuided", args={
+            "compressed_text": compressed_text,"visual_schema": visual_schema,
+        }, mode="stream")
+        return __result__
     def ExtractResume(self, resume: str,
         baml_options: BamlCallOptions = {},
     ) -> baml_py.baml_py.HTTPRequest:
         __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="ExtractResume", args={
             "resume": resume,
+        }, mode="stream")
+        return __result__
+    def InferTableSchemaFromImage(self, page_img: baml_py.Image,compressed_text: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="InferTableSchemaFromImage", args={
+            "page_img": page_img,"compressed_text": compressed_text,
         }, mode="stream")
         return __result__
     def InterpretTable(self, compressed_text: str,schema: types.CanonicalSchema,model_name: str,

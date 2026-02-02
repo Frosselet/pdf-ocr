@@ -291,11 +291,23 @@ Two modes are available:
 
 Both modes use GPT-4o by default; override with `model="..."`. Both support context inference and return per-field mapping metadata.
 
+**Vision-guided parsing** (`interpret_table` with `pdf_path=`): Some PDFs have dense tables with stacked/multi-line headers where text extraction produces garbled or concatenated column names (e.g. `"33020 WHEAT"` as a single span). Passing `pdf_path=` to `interpret_table()` enables a vision pre-step:
+
+```
+Step 0 (vision):  page image + compressed text → InferredTableSchema
+Step 1 (guided):  compressed text + InferredTableSchema → ParsedTable
+Step 2 (unchanged): ParsedTable → MappedTable
+```
+
+Each page is rendered as an image (150 DPI) and a vision-capable LLM reads the correct column headers from the visual layout. The vision prompt cross-validates between the image and the compressed text: it first counts pipe-separated cells in the data rows to establish a minimum column count, then reads headers from the image paying attention to narrow columns that are easily missed, and finally verifies that the inferred column count is at least as large as the pipe-cell count. Step 1 then uses the guided variant (`AnalyzeAndParseTableGuided`) with the inferred schema to split compound values into the correct columns. The guided prompt includes the same section boundary format specification as the unguided variant so that section-aware batching and section boundary validation work identically. When `pdf_path` is omitted, the pipeline behaves exactly as before (no vision overhead). An optional `vision_model=` parameter allows using a different model for the vision step. Note: the vision prompt examples use domain-neutral terms to avoid biasing the model toward any specific document type.
+
 **Multi-page auto-split**: Both `interpret_table` and `interpret_table_single_shot` automatically split input on the page separator (`\f` by default). When multiple pages are detected, all pages are processed **concurrently** via the async BAML client and `asyncio.gather()`, then results are merged into a single `MappedTable`. Single-page input with few rows is processed synchronously with no event loop overhead.
 
 **Step-2 batching** (`interpret_table` only): After step 1 parses each page's rows, step 2 splits them into batches of `batch_size` rows (default 20) before calling the mapping LLM. This prevents output truncation on dense pages — e.g., a page with 78 data rows becomes 4 batches of 20. All batches across all pages run concurrently. Batching is section-aware: when step 1's notes contain section boundaries, rows are split at section edges when possible, and each batch receives re-indexed notes with only its relevant sections. Large sections are split internally at `batch_size` boundaries.
 
-**Page tracking**: Each output record carries a `_page` extra field (1-indexed) indicating which source page it originated from. This appears in `to_records()` output and `record.model_dump()`.
+**Section boundary validation**: LLMs often miscount rows in long sectioned tables, producing off-by-one section boundaries that cascade across all subsequent sections (e.g., KWINANA gets 17 rows instead of 18, shifting ALBANY and ESPERANCE). After step 1, Python code deterministically counts pipe-table data rows per section directly from the compressed text (`_detect_sections_from_text`) and cross-references them with the LLM's claimed boundaries (`_validate_section_boundaries`). When the text-detected counts sum to the total data row count, they replace the LLM's boundaries. This ensures correct section labels reach step 2 for context inference (e.g., `load_port` derived from section headers). The detection works by walking the compressed text line-by-line, identifying pipe-table separators (`|---|`), counting data rows (first cell non-empty) vs aggregation rows (first cell empty, e.g., `||...337,000...|`), and pairing each table with the most recent non-pipe, non-tab text line as its section header. Extra detected sections (e.g., a stock-at-port summary table) are filtered out via ordered label-prefix matching against the LLM's section labels.
+
+**Page-keyed results**: `interpret_table()` and `interpret_table_single_shot()` return `dict[int, MappedTable]` keyed by 1-indexed page number. Each page gets its own complete result (records, unmapped columns, mapping notes, metadata). Records contain only canonical schema fields — no internal metadata. Use `to_records(result)` to flatten all pages into a single list, or `to_records_by_page(result)` for `{page: [dicts]}`.
 
 ### Table Types
 
@@ -344,6 +356,12 @@ result = interpret_table_single_shot(compressed, schema)
 # With a fallback model — retries with fallback if primary model fails
 result = interpret_table(compressed, schema, model="openai/gpt-4o", fallback_model="openai/gpt-4o-mini")
 
+# Vision-guided parsing — for PDFs with garbled/stacked headers
+result = interpret_table(compressed, schema, pdf_path="document.pdf")
+
+# Vision with a different model for the vision step
+result = interpret_table(compressed, schema, pdf_path="document.pdf", vision_model="openai/gpt-4o")
+
 # Convert to plain dicts
 for record in to_records(result):
     print(record)
@@ -367,20 +385,22 @@ All functions accept an optional `fallback_model` keyword argument. When set, if
 
 | Function | Steps | Default model | Use case |
 |---|---|---|---|
-| `interpret_table(text, schema)` | 2 (parse + map) | GPT-4o | Default; best accuracy. Auto-splits, batches step 2, tracks `_page` |
+| `interpret_table(text, schema)` | 2 (parse + map) | GPT-4o | Default; best accuracy. Auto-splits, batches step 2, returns `dict[int, MappedTable]`. Pass `pdf_path=` for vision-guided parsing |
 | `interpret_table_single_shot(text, schema)` | 1 | GPT-4o | Simple tables; saves one round-trip. No batching — may truncate on dense pages |
 | `analyze_and_parse(text)` | 1 | GPT-4o | Parse only; inspect structure before mapping |
+| `analyze_and_parse_guided(text, visual_schema)` | 1 | GPT-4o | Parse guided by a visual schema (for garbled headers) |
+| `infer_table_schema_from_image(img_b64, text)` | 1 | GPT-4o | Vision step: infer column structure from a page image |
 | `map_to_schema(parsed, schema)` | 1 | GPT-4o | Map a previously parsed table |
 | `interpret_tables_async(texts, schema)` | 2 per table | GPT-4o | Explicit async control over pre-split tables |
-| `to_records(mapped_table)` | — | — | Convert to `list[dict]` — schema columns only, no metadata |
-| `to_records_by_page(mapped_table)` | — | — | Convert to `{page: [dicts]}` — grouped by source page |
+| `to_records(result)` | — | — | Flatten `dict[int, MappedTable]` (or single `MappedTable`) to `list[dict]` — schema columns only |
+| `to_records_by_page(result)` | — | — | Convert to `{page: [dicts]}` — grouped by source page |
 
 All interpretation functions accept `model` and `fallback_model` keyword arguments to override the default model.
 
 #### Output
 
-`interpret_table` returns a `MappedTable` with:
-- **`records`** — list of `MappedRecord` objects. Dynamic fields match the canonical column names. Access via `record.port`, `record.quantity_tonnes`, etc. When produced by `interpret_table()`, each record also carries an internal `_page` field (1-indexed) for page tracking. Use `to_records()` for schema-clean dicts (metadata stripped) or `to_records_by_page()` for page-grouped output.
+`interpret_table` returns a `dict[int, MappedTable]` keyed by 1-indexed page number. Each `MappedTable` contains:
+- **`records`** — list of `MappedRecord` objects. Dynamic fields match the canonical column names. Access via `record.port`, `record.quantity_tonnes`, etc. Records contain only canonical schema fields. Use `to_records()` for plain dicts or `to_records_by_page()` for page-grouped output.
 - **`unmapped_columns`** — source columns that could not be mapped to any canonical column.
 - **`mapping_notes`** — optional notes about ambiguous matches or type coercion issues.
 - **`metadata`** — an `InterpretationMetadata` object with:
@@ -398,3 +418,5 @@ All interpretation functions accept `model` and `fallback_model` keyword argumen
 - **No image/drawing extraction**: Only text spans are rendered.
 - **Rotation**: Rotated text is placed at its origin point but the text direction is not adjusted.
 - **Very dense pages**: Pages with many overlapping elements at different sizes may produce wide lines due to the single grid resolution.
+- **Vision mode cost**: Each page rendered at 150 DPI produces a ~200-400KB PNG image sent to the vision LLM. This adds latency and token cost (one extra LLM call per page for step 0). Only use `pdf_path=` when text-based extraction produces garbled headers.
+- **Section boundary validation scope**: The deterministic section detection relies on the compressed text having a repeating pattern of section-header → pipe-table → aggregation-row. It requires at least 2 such sections to activate. Tables without aggregation rows, or with non-standard compressed text formatting, fall back to the LLM's section boundaries as-is.

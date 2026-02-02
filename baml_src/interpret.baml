@@ -86,6 +86,15 @@ class MappedTable {
   metadata InterpretationMetadata @description("Metadata about the interpretation: model used, per-field mapping rationale, detected sections")
 }
 
+// ─── Vision-based schema inference ──────────────────────────────────────────
+
+class InferredTableSchema {
+  column_names string[] @description("Column headers as they visually appear in the table, left to right. For multi-line headers, combine stacked labels into a single name per column (e.g. 'Date / Arrival' or 'Quantity MT').")
+  column_count int @description("Total number of data columns")
+  header_levels int @description("Number of header rows (1 for flat, >1 for stacked/multi-line headers)")
+  notes string? @description("Observations about the header structure: merged cells, stacked labels, visual groupings, etc.")
+}
+
 // ─── Functions ───────────────────────────────────────────────────────────────
 
 function AnalyzeAndParseTable(compressed_text: string) -> ParsedTable {
@@ -111,6 +120,105 @@ function AnalyzeAndParseTable(compressed_text: string) -> ParsedTable {
       missing values, or unusual-looking content. If a row occupies a data position in
       the table it is a data row — do not filter based on cell content.
     - If the table has merged cells or spans, repeat the value for each spanned column.
+
+    Compressed text:
+    ---
+    {{ compressed_text }}
+    ---
+
+    {{ ctx.output_format }}
+  "#
+}
+
+function InferTableSchemaFromImage(page_img: image, compressed_text: string) -> InferredTableSchema {
+  client CustomGPT4o
+  prompt #"
+    {{ _.role("system") }}
+    You are a table structure analyst. You are given:
+    1. An image of a PDF page containing a table
+    2. Compressed text extracted from the same page (which may have parsing errors)
+
+    Your task: determine the COMPLETE table column structure by combining
+    evidence from BOTH the image and the compressed text.
+
+    CRITICAL: Dense tables with small fonts often have narrow columns that are
+    easy to miss visually. You MUST cross-validate your column list against the
+    data rows in the compressed text.
+
+    Steps:
+    1. Count the pipe-separated cells in the FIRST data row of the compressed
+       text (the row after the |---|---| separator). This gives you the MINIMUM
+       number of columns — some cells may be concatenated (two values joined
+       into one cell), so the actual column count may be HIGHER.
+    2. Find the table header area in the image. Read EVERY column header left
+       to right. Pay special attention to narrow single-word columns between
+       wider multi-word columns — these are commonly missed.
+       - For stacked/multi-line headers, combine the labels into one name
+         (e.g. a column whose header reads "Start" on line 1 and "Date" on
+         line 2 becomes "Start Date").
+    3. Cross-reference with the garbled header lines in the compressed text
+       (the lines above the pipe table). Header fragments like individual
+       words (e.g. "ID", "STATUS", "CODE") often correspond to real
+       columns that may appear narrow in the image.
+    4. Verify: your column_count MUST be >= the number of pipe-separated cells
+       in the data rows. If it is less, you have missed columns — re-examine
+       the image and text headers.
+    5. Note how many header rows exist and any structural observations,
+       including which data cells appear concatenated (e.g. "42 Smith"
+       containing values for two columns).
+
+    {{ ctx.output_format }}
+
+    {{ _.role("user") }}
+    {{ page_img }}
+
+    Compressed text (for reference — may contain errors):
+    ---
+    {{ compressed_text }}
+    ---
+  "#
+}
+
+function AnalyzeAndParseTableGuided(compressed_text: string, visual_schema: InferredTableSchema) -> ParsedTable {
+  client CustomGPT4o
+  prompt #"
+    You are a table-structure analyst. Given compressed text extracted from a PDF
+    AND a visual schema describing the correct column structure (inferred from the
+    page image), parse the table data rows.
+
+    VISUAL SCHEMA (from image analysis — treat as ground truth for column count
+    and header names):
+    {{ visual_schema }}
+
+    The compressed text below may have parsing artifacts: column headers may be
+    garbled or values from adjacent columns may be concatenated into a single
+    cell. Use the visual schema's column_names and column_count to:
+    - Correctly identify which part of the text corresponds to which column
+    - Split concatenated values when the column count in a row doesn't match
+      the expected count (e.g. "33020 WHEAT" should become two cells: "33020"
+      and "WHEAT" if they map to separate columns)
+    - Use the visual schema's column names as the authoritative header names
+
+    Steps:
+    1. Use the visual schema to set the correct headers (column_names →
+       headers.names, header_levels → headers.levels).
+    2. Determine the table type.
+    3. Identify any aggregation rows/columns and separate them.
+    4. Parse every data row into an array of string cell values — the array
+       length MUST equal visual_schema.column_count for each row.
+    5. If the text contains multiple table sections separated by labels or headers
+       (e.g. data grouped by category, region, time period, or any other dimension),
+       record each section label and which data rows belong to it in the notes field.
+       Format: "Sections: <label1> (rows 0-N), <label2> (rows N+1-M), ..."
+
+    Important:
+    - Keep cell values as strings exactly as they appear (do not reformat).
+    - Exclude header rows and aggregation rows from data_rows.
+    - Include ALL data rows regardless of cell content.
+    - If a row has fewer tokens than expected columns, split concatenated
+      values to reach the correct column count.
+    - If the table has merged cells or spans, repeat the value for each
+      spanned column.
 
     Compressed text:
     ---
