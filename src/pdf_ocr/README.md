@@ -291,6 +291,12 @@ Two modes are available:
 
 Both modes use GPT-4o by default; override with `model="..."`. Both support context inference and return per-field mapping metadata.
 
+**Multi-page auto-split**: Both `interpret_table` and `interpret_table_single_shot` automatically split input on the page separator (`\f` by default). When multiple pages are detected, all pages are processed **concurrently** via the async BAML client and `asyncio.gather()`, then results are merged into a single `MappedTable`. Single-page input with few rows is processed synchronously with no event loop overhead.
+
+**Step-2 batching** (`interpret_table` only): After step 1 parses each page's rows, step 2 splits them into batches of `batch_size` rows (default 20) before calling the mapping LLM. This prevents output truncation on dense pages — e.g., a page with 78 data rows becomes 4 batches of 20. All batches across all pages run concurrently. Batching is section-aware: when step 1's notes contain section boundaries, rows are split at section edges when possible, and each batch receives re-indexed notes with only its relevant sections. Large sections are split internally at `batch_size` boundaries.
+
+**Page tracking**: Each output record carries a `_page` extra field (1-indexed) indicating which source page it originated from. This appears in `to_records()` output and `record.model_dump()`.
+
 ### Table Types
 
 The pipeline recognises five structural patterns:
@@ -323,13 +329,16 @@ This tells the LLM exactly which fields to produce and their types, without requ
 ```python
 from pdf_ocr import compress_spatial_text, interpret_table, CanonicalSchema, ColumnDef, to_records
 
-compressed = compress_spatial_text("document.pdf")
+compressed = compress_spatial_text("document.pdf")  # may contain \f between pages
 schema = CanonicalSchema(columns=[...])
 
-# 2-step (default)
+# 2-step (default) — auto-splits, batches step 2, runs all batches concurrently
 result = interpret_table(compressed, schema)
 
-# Single-shot alternative
+# Custom batch size for very wide tables (fewer rows per LLM call)
+result = interpret_table(compressed, schema, batch_size=10)
+
+# Single-shot alternative — auto-splits but cannot batch, may truncate on dense pages
 result = interpret_table_single_shot(compressed, schema)
 
 # With a fallback model — retries with fallback if primary model fails
@@ -340,7 +349,7 @@ for record in to_records(result):
     print(record)
 ```
 
-#### Async (parallel across pages)
+#### Async (explicit parallel control)
 
 ```python
 import asyncio
@@ -350,7 +359,7 @@ pages = compressed.split("\f")
 tables = asyncio.run(interpret_tables_async(pages, schema, fallback_model="openai/gpt-4o-mini"))
 ```
 
-`interpret_tables_async` runs all parse calls concurrently via `asyncio.gather()`, then all map calls concurrently — maximising throughput when processing multi-page documents.
+`interpret_tables_async` runs all parse calls concurrently via `asyncio.gather()`, then all map calls concurrently. Use this when you already have an event loop or want explicit control over which text chunks to parallelize. For most cases, `interpret_table()` handles concurrency automatically.
 
 All functions accept an optional `fallback_model` keyword argument. When set, if the primary `model` raises an exception (network error, rate limit, unavailable model), the call is retried with the fallback model.
 
@@ -358,11 +367,11 @@ All functions accept an optional `fallback_model` keyword argument. When set, if
 
 | Function | Steps | Default model | Use case |
 |---|---|---|---|
-| `interpret_table(text, schema)` | 2 (parse + map) | GPT-4o | Default; best accuracy on complex tables |
-| `interpret_table_single_shot(text, schema)` | 1 | GPT-4o | Simple tables; saves one round-trip |
+| `interpret_table(text, schema)` | 2 (parse + map) | GPT-4o | Default; best accuracy. Auto-splits, batches step 2, tracks `_page` |
+| `interpret_table_single_shot(text, schema)` | 1 | GPT-4o | Simple tables; saves one round-trip. No batching — may truncate on dense pages |
 | `analyze_and_parse(text)` | 1 | GPT-4o | Parse only; inspect structure before mapping |
 | `map_to_schema(parsed, schema)` | 1 | GPT-4o | Map a previously parsed table |
-| `interpret_tables_async(texts, schema)` | 2 per table | GPT-4o | Parallel across multiple tables/pages |
+| `interpret_tables_async(texts, schema)` | 2 per table | GPT-4o | Explicit async control over pre-split tables |
 | `to_records(mapped_table)` | — | — | Convert `MappedTable` to `list[dict]` |
 
 All interpretation functions accept `model` and `fallback_model` keyword arguments to override the default model.
@@ -370,7 +379,7 @@ All interpretation functions accept `model` and `fallback_model` keyword argumen
 #### Output
 
 `interpret_table` returns a `MappedTable` with:
-- **`records`** — list of `MappedRecord` objects. Dynamic fields match the canonical column names. Access via `record.port`, `record.quantity_tonnes`, etc., or convert with `to_records()`.
+- **`records`** — list of `MappedRecord` objects. Dynamic fields match the canonical column names. Access via `record.port`, `record.quantity_tonnes`, etc., or convert with `to_records()`. When produced by `interpret_table()`, each record also has a `_page` field (1-indexed) indicating its source page.
 - **`unmapped_columns`** — source columns that could not be mapped to any canonical column.
 - **`mapping_notes`** — optional notes about ambiguous matches or type coercion issues.
 - **`metadata`** — an `InterpretationMetadata` object with:

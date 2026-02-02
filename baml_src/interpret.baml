@@ -107,6 +107,9 @@ function AnalyzeAndParseTable(compressed_text: string) -> ParsedTable {
     Important:
     - Keep cell values as strings exactly as they appear (do not reformat numbers or dates).
     - Exclude header rows and aggregation rows from data_rows.
+    - Include ALL other rows, even if they have empty cells, dashes, "N/A", zero or
+      missing values, or unusual-looking content. If a row occupies a data position in
+      the table it is a data row — do not filter based on cell content.
     - If the table has merged cells or spans, repeat the value for each spanned column.
 
     Compressed text:
