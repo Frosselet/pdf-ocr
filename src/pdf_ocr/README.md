@@ -372,14 +372,15 @@ All functions accept an optional `fallback_model` keyword argument. When set, if
 | `analyze_and_parse(text)` | 1 | GPT-4o | Parse only; inspect structure before mapping |
 | `map_to_schema(parsed, schema)` | 1 | GPT-4o | Map a previously parsed table |
 | `interpret_tables_async(texts, schema)` | 2 per table | GPT-4o | Explicit async control over pre-split tables |
-| `to_records(mapped_table)` | — | — | Convert `MappedTable` to `list[dict]` |
+| `to_records(mapped_table)` | — | — | Convert to `list[dict]` — schema columns only, no metadata |
+| `to_records_by_page(mapped_table)` | — | — | Convert to `{page: [dicts]}` — grouped by source page |
 
 All interpretation functions accept `model` and `fallback_model` keyword arguments to override the default model.
 
 #### Output
 
 `interpret_table` returns a `MappedTable` with:
-- **`records`** — list of `MappedRecord` objects. Dynamic fields match the canonical column names. Access via `record.port`, `record.quantity_tonnes`, etc., or convert with `to_records()`. When produced by `interpret_table()`, each record also has a `_page` field (1-indexed) indicating its source page.
+- **`records`** — list of `MappedRecord` objects. Dynamic fields match the canonical column names. Access via `record.port`, `record.quantity_tonnes`, etc. When produced by `interpret_table()`, each record also carries an internal `_page` field (1-indexed) for page tracking. Use `to_records()` for schema-clean dicts (metadata stripped) or `to_records_by_page()` for page-grouped output.
 - **`unmapped_columns`** — source columns that could not be mapped to any canonical column.
 - **`mapping_notes`** — optional notes about ambiguous matches or type coercion issues.
 - **`metadata`** — an `InterpretationMetadata` object with:

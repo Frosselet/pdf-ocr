@@ -152,13 +152,33 @@ def to_records(mapped_table: baml_types.MappedTable) -> list[dict]:
 
     Dynamic fields on MappedRecord are stored in pydantic's ``model_extra``,
     since the BAML class uses ``@@dynamic`` (``extra='allow'``).
+
+    Internal metadata fields (``_page``, etc.) are stripped so the output
+    contains only canonical schema columns.  Use :func:`to_records_by_page`
+    to access page-grouped records.
     """
     results = []
     for rec in mapped_table.records:
-        d = rec.model_dump()
-        # model_dump() on extra='allow' models includes extra fields at top level
+        d = {k: v for k, v in rec.model_dump().items() if not k.startswith("_")}
         results.append(d)
     return results
+
+
+def to_records_by_page(mapped_table: baml_types.MappedTable) -> dict[int, list[dict]]:
+    """Convert a MappedTable into a dict of ``{page_number: [records]}``.
+
+    Each record is a plain dict containing only canonical schema columns
+    (internal metadata fields are stripped).  Page numbers are 1-indexed.
+
+    Records without a ``_page`` field are grouped under page ``0``.
+    """
+    by_page: dict[int, list[dict]] = {}
+    for rec in mapped_table.records:
+        raw = rec.model_dump()
+        page = raw.get("_page", 0)
+        d = {k: v for k, v in raw.items() if not k.startswith("_")}
+        by_page.setdefault(page, []).append(d)
+    return by_page
 
 
 # ─── Async runner helper ─────────────────────────────────────────────────────

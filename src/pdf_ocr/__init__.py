@@ -8,6 +8,7 @@ from pdf_ocr.interpret import (
     interpret_table_single_shot,
     interpret_tables_async,
     to_records,
+    to_records_by_page,
 )
 from pdf_ocr.spatial_text import pdf_to_spatial_text
 
@@ -20,4 +21,5 @@ __all__ = [
     "interpret_tables_async",
     "pdf_to_spatial_text",
     "to_records",
+    "to_records_by_page",
 ]
