@@ -4,11 +4,11 @@
 // ─── Enums ───────────────────────────────────────────────────────────────────
 
 enum TableType {
-  FlatHeader
-  HierarchicalHeader
-  PivotedTable
-  TransposedTable
-  Unknown
+  FlatHeader @description("Independent columns with no spanning parent cells. Header text may span multiple rows (stacked/multiline labels) but each column stands alone — combine stacked text into one name per column. 1:1 row-to-record mapping.")
+  HierarchicalHeader @description("Tree-structured headers where parent cells span multiple child columns (e.g. 'Q1 2025' spanning 'Revenue' and 'Costs'). Column names are compound paths (e.g. 'Q1 2025 / Revenue'). 1:1 row-to-record mapping. Note: multiline headers with no spanning are FlatHeader, not this.")
+  PivotedTable @description("Categories as rows, time periods or attributes as columns — requires unpivoting: each source row produces multiple output records, one per value column")
+  TransposedTable @description("Fields as rows, records as columns — requires transposition: each column becomes a record, each row becomes a field")
+  Unknown @description("Ambiguous structure — use best judgment based on content")
 }
 
 enum AggregationType {
@@ -30,8 +30,8 @@ enum Confidence {
 // ─── Intermediate pipeline types ─────────────────────────────────────────────
 
 class HeaderInfo {
-  levels int @description("Number of header levels (1 for flat, >1 for hierarchical)")
-  names string[][] @description("Header names per level, outer = level, inner = columns")
+  levels int @description("Number of header rows. For FlatHeader with stacked/multiline labels, this counts the text rows but names[][] should contain the combined column names. For HierarchicalHeader, this counts the hierarchy depth.")
+  names string[][] @description("Header names per level, outer = level, inner = columns. For FlatHeader (even with multiline labels), use a single level with combined names. For HierarchicalHeader, each level represents a tier in the tree.")
 }
 
 class AggregationInfo {
@@ -73,10 +73,18 @@ class FieldMapping {
   confidence Confidence
 }
 
+class TableTypeInference {
+  table_type TableType          @description("The inferred table structure type")
+  rationale string              @description("Brief explanation of why this table type was chosen, citing specific structural evidence")
+  confidence Confidence         @description("How confident the inference is based on structural clarity")
+}
+
 class InterpretationMetadata {
   model string                  @description("Model that produced this result, e.g. 'openai/gpt-4o'")
+  table_type_inference TableTypeInference @description("The inferred table type with rationale explaining the classification")
   field_mappings FieldMapping[] @description("One entry per canonical column, explaining how it was resolved")
   sections_detected string[]?   @description("Section/group labels found in the text, if any (e.g. ['GERALDTON', 'KWINANA'])")
+  section_role string?          @description("'context' if a single section label applies to all rows, 'grouping' if multiple labels partition rows into groups")
 }
 
 class MappedTable {
@@ -89,10 +97,11 @@ class MappedTable {
 // ─── Vision-based schema inference ──────────────────────────────────────────
 
 class InferredTableSchema {
-  column_names string[] @description("Column headers as they visually appear in the table, left to right. For multi-line headers, combine stacked labels into a single name per column (e.g. 'Date / Arrival' or 'Quantity MT').")
+  column_names string[] @description("Column headers as they visually appear in the table, left to right. For stacked/multiline headers, combine the vertically stacked labels into a single name per column (e.g. 'Unique Slot Reference Number'). For hierarchical headers with spanning parents, use compound paths (e.g. 'Q1 2025 / Revenue').")
   column_count int @description("Total number of data columns")
-  header_levels int @description("Number of header rows (1 for flat, >1 for stacked/multi-line headers)")
-  notes string? @description("Observations about the header structure: merged cells, stacked labels, visual groupings, etc.")
+  header_levels int @description("Number of header rows (1 for single-row, >1 for stacked/multiline or hierarchical)")
+  has_spanning_headers bool @description("True if parent cells span multiple child columns (hierarchical). False if headers are just stacked text with no spanning (multiline flat).")
+  notes string? @description("Observations about the header structure: merged cells, stacked labels, spanning parent cells, visual groupings, etc.")
 }
 
 // ─── Functions ───────────────────────────────────────────────────────────────
@@ -103,9 +112,41 @@ function AnalyzeAndParseTable(compressed_text: string) -> ParsedTable {
     You are a table-structure analyst. Given compressed text extracted from a PDF,
     identify the table structure and parse all data rows.
 
+    DETECTING HEADER STRUCTURE:
+
+    Before classifying, examine the header rows carefully:
+
+    1. STACKED/MULTILINE (→ FlatHeader):
+       - Each column has text that wraps across multiple rows vertically
+       - BUT each column is independent — no cell spans multiple columns horizontally
+       - Example: "Unique Slot" / "Reference" / "Number" stacked vertically = one column
+         named "Unique Slot Reference Number"
+       - Key sign: The number of text fragments per row equals the number of columns
+
+    2. GROUPED/SPANNING (→ HierarchicalHeader):
+       - A parent header cell spans HORIZONTALLY across multiple child columns
+       - Children are sibling columns that share a common parent cell above them
+       - Example: "Date" spanning over "Nominated" and "Accepted" = compound names
+         "Date / Nominated" and "Date / Accepted"
+       - Key sign: A header row has FEWER cells than the data rows because parents span
+
+    KEY TEST: Do sibling columns share a common parent cell above them that spans
+    horizontally? If YES → HierarchicalHeader. If NO → FlatHeader (even with multiline text).
+
     Steps:
-    1. Determine the table type (FlatHeader, HierarchicalHeader, PivotedTable, TransposedTable, or Unknown).
-    2. Extract headers — for hierarchical tables, capture each level separately.
+    1. Determine the table type using the header structure tests above:
+       - FlatHeader: Each column has its own independent header. This includes tables with
+         stacked/multiline headers where text is split across multiple rows but each column
+         stands alone (combine the stacked text into one name per column).
+       - HierarchicalHeader: Parent header cells SPAN multiple child columns in a tree
+         structure (e.g. "Q1 2025" spanning over "Revenue" and "Costs" columns beneath it).
+         The key distinction is HORIZONTAL SPANNING — siblings share a common parent cell.
+       - PivotedTable: Row labels are categories, column headers are time periods or
+         attributes — requires unpivoting.
+       - TransposedTable: Field names as rows, records as columns — requires transposition.
+       - Unknown: Ambiguous structure.
+    2. Extract headers — for hierarchical tables, capture each level separately. For flat
+       tables with stacked/multiline headers, combine the text into single column names.
     3. Identify any aggregation rows/columns (totals, subtotals, averages, etc.) and separate them.
     4. Parse every data row into an array of string cell values, preserving the original order.
     5. If the text contains multiple table sections separated by labels or headers
@@ -120,6 +161,8 @@ function AnalyzeAndParseTable(compressed_text: string) -> ParsedTable {
       missing values, or unusual-looking content. If a row occupies a data position in
       the table it is a data row — do not filter based on cell content.
     - If the table has merged cells or spans, repeat the value for each spanned column.
+    - Multiline/stacked headers (where column names wrap across rows but each column is
+      independent) should be classified as FlatHeader, NOT HierarchicalHeader.
 
     Compressed text:
     ---
@@ -141,6 +184,28 @@ function InferTableSchemaFromImage(page_img: image, compressed_text: string) -> 
     Your task: determine the COMPLETE table column structure by combining
     evidence from BOTH the image and the compressed text.
 
+    DETECTING HEADER STRUCTURE:
+
+    Before setting has_spanning_headers, examine the header area carefully:
+
+    1. STACKED/MULTILINE (→ has_spanning_headers=false):
+       - Each column has text that wraps across multiple rows vertically
+       - BUT each column is independent — no cell spans multiple columns horizontally
+       - Example: "Unique Slot" / "Reference" / "Number" stacked vertically = one column
+         named "Unique Slot Reference Number"
+       - Key visual sign: Column dividers run continuously from top to bottom of header
+
+    2. GROUPED/SPANNING (→ has_spanning_headers=true):
+       - A parent header cell spans HORIZONTALLY across multiple child columns
+       - Children are sibling columns that share a common parent cell above them
+       - Example: "Date" spanning over "Nominated" and "Accepted" = compound names
+         "Date / Nominated" and "Date / Accepted"
+       - Key visual sign: A cell in an upper row is wider than cells below it,
+         with column dividers only appearing in the lower rows
+
+    KEY TEST: Do sibling columns share a common parent cell above them that spans
+    horizontally? If YES → has_spanning_headers=true. If NO → false (even with multiline text).
+
     CRITICAL: Dense tables with small fonts often have narrow columns that are
     easy to miss visually. You MUST cross-validate your column list against the
     data rows in the compressed text.
@@ -153,17 +218,20 @@ function InferTableSchemaFromImage(page_img: image, compressed_text: string) -> 
     2. Find the table header area in the image. Read EVERY column header left
        to right. Pay special attention to narrow single-word columns between
        wider multi-word columns — these are commonly missed.
-       - For stacked/multi-line headers, combine the labels into one name
-         (e.g. a column whose header reads "Start" on line 1 and "Date" on
-         line 2 becomes "Start Date").
-    3. Cross-reference with the garbled header lines in the compressed text
+       - For stacked/multiline headers (text split across rows but each column
+         independent), combine the vertically stacked labels into one name
+         (e.g. "Unique Slot" + "Reference" + "Number" → "Unique Slot Reference Number").
+       - For hierarchical headers (parent cells spanning horizontally across
+         multiple child columns), use compound paths (e.g. "Q1 2025 / Revenue").
+    3. Apply the header structure test above to set has_spanning_headers.
+    4. Cross-reference with the garbled header lines in the compressed text
        (the lines above the pipe table). Header fragments like individual
        words (e.g. "ID", "STATUS", "CODE") often correspond to real
        columns that may appear narrow in the image.
-    4. Verify: your column_count MUST be >= the number of pipe-separated cells
+    5. Verify: your column_count MUST be >= the number of pipe-separated cells
        in the data rows. If it is less, you have missed columns — re-examine
        the image and text headers.
-    5. Note how many header rows exist and any structural observations,
+    6. Note how many header rows exist and any structural observations,
        including which data cells appear concatenated (e.g. "42 Smith"
        containing values for two columns).
 
@@ -202,7 +270,11 @@ function AnalyzeAndParseTableGuided(compressed_text: string, visual_schema: Infe
     Steps:
     1. Use the visual schema to set the correct headers (column_names →
        headers.names, header_levels → headers.levels).
-    2. Determine the table type.
+    2. Determine the table type based on has_spanning_headers:
+       - If has_spanning_headers is true → HierarchicalHeader (parent cells span
+         multiple child columns in a tree structure)
+       - If has_spanning_headers is false → FlatHeader (even with stacked/multiline
+         headers, each column is independent)
     3. Identify any aggregation rows/columns and separate them.
     4. Parse every data row into an array of string cell values — the array
        length MUST equal visual_schema.column_count for each row.
@@ -232,10 +304,26 @@ function AnalyzeAndParseTableGuided(compressed_text: string, visual_schema: Infe
 function MapToCanonicalSchema(parsed_table: ParsedTable, schema: CanonicalSchema, model_name: string) -> MappedTable {
   client CustomGPT4o
   prompt #"
-    You are a data mapper. Given a parsed table and a canonical schema, map each data row
-    to the canonical schema columns.
+    You are a data mapper. Given a parsed table and a canonical schema, map data rows
+    to the canonical schema columns using a strategy appropriate for the table type.
 
-    Mapping rules:
+    TABLE TYPE: {{ parsed_table.table_type }}
+
+    Mapping strategy by table type:
+    - FlatHeader: Map each data row directly to one output record. Columns align 1:1.
+    - HierarchicalHeader: Column names may be compound from merged headers (e.g. "Q1 / Revenue").
+      Match the full compound name against aliases. Each data row produces one record.
+    - PivotedTable: Categories are rows, time periods or attributes are columns. You must UNPIVOT:
+      for each data row, produce ONE OUTPUT RECORD PER VALUE COLUMN. The column header becomes
+      a field value (e.g. column "Period A" → the "period" field gets value "Period A").
+      Example: a row "Item X | 100 | 200" with columns "Category | Period A | Period B"
+      becomes TWO records: {category: "Item X", period: "Period A", value: 100} and
+      {category: "Item X", period: "Period B", value: 200}.
+    - TransposedTable: Fields are rows, records are columns. Transpose before mapping:
+      each column (after the first) is a separate record, each row label is a field name.
+    - Unknown: Use best judgment based on the data structure.
+
+    General mapping rules:
     1. Match source columns to canonical columns using name, aliases, and description.
     2. If a source column matches multiple canonical columns, pick the best match and note the ambiguity.
     3. Coerce values to the expected type where possible (e.g. "1,234" -> 1234 for int columns).
@@ -258,7 +346,16 @@ function MapToCanonicalSchema(parsed_table: ParsedTable, schema: CanonicalSchema
          Medium = inferred from context with reasonable certainty,
          Low = best guess or ambiguous)
     9. Set metadata.model to "{{ model_name }}" (it will be provided).
-    10. If the text had section labels, list them in metadata.sections_detected.
+    10. If the text had section labels, list them in metadata.sections_detected and set
+        metadata.section_role to:
+        - "context" if there is only ONE section label that applies to all rows
+        - "grouping" if there are MULTIPLE section labels that partition rows into groups
+    11. Populate metadata.table_type_inference with:
+        - table_type: Use the table type from parsed_table ({{ parsed_table.table_type }})
+        - rationale: Explain why this classification applies based on the table structure.
+          For FlatHeader vs HierarchicalHeader, explicitly state whether parent cells span
+          horizontally across multiple child columns or not.
+        - confidence: High if structure is unambiguous, Medium if some irregularities, Low if uncertain
 
     Parsed table:
     {{ parsed_table }}
@@ -276,10 +373,46 @@ function InterpretTable(compressed_text: string, schema: CanonicalSchema, model_
     You are a table interpreter. Given compressed text from a PDF and a canonical schema,
     extract and map tabular data in a single pass.
 
+    DETECTING HEADER STRUCTURE:
+
+    Before classifying, examine the header rows carefully:
+
+    1. STACKED/MULTILINE (→ FlatHeader):
+       - Each column has text that wraps across multiple rows vertically
+       - BUT each column is independent — no cell spans multiple columns horizontally
+       - Example: "Unique Slot" / "Reference" / "Number" stacked vertically = one column
+         named "Unique Slot Reference Number"
+       - Key sign: The number of text fragments per row equals the number of columns
+
+    2. GROUPED/SPANNING (→ HierarchicalHeader):
+       - A parent header cell spans HORIZONTALLY across multiple child columns
+       - Children are sibling columns that share a common parent cell above them
+       - Example: "Date" spanning over "Nominated" and "Accepted" = compound names
+         "Date / Nominated" and "Date / Accepted"
+       - Key sign: A header row has FEWER cells than the data rows because parents span
+
+    KEY TEST: Do sibling columns share a common parent cell above them that spans
+    horizontally? If YES → HierarchicalHeader. If NO → FlatHeader (even with multiline text).
+
     Steps:
-    1. Identify the table structure (flat, hierarchical, pivoted, transposed).
+    1. Identify the table structure using the header structure tests above and apply the
+       appropriate mapping strategy:
+       - FlatHeader: Each column has its own independent header. This includes tables with
+         stacked/multiline headers where text is split across multiple rows but each column
+         stands alone — combine the stacked text into one column name. Map each row to one record.
+       - HierarchicalHeader: Parent header cells SPAN HORIZONTALLY across multiple child columns
+         in a tree structure (e.g. "Q1 2025" spanning over "Revenue" and "Costs" columns beneath it).
+         Column names are compound paths (e.g. "Q1 2025 / Revenue"). Map each row to one record.
+         NOTE: Multiline/stacked headers with no horizontal spanning are FlatHeader, not this.
+       - PivotedTable: Categories as rows, time periods or attributes as columns. UNPIVOT:
+         for each data row, produce ONE RECORD PER VALUE COLUMN. The column header becomes
+         a field value. Example: "Item X | 100 | 200" with columns "Category | Period A | Period B"
+         becomes TWO records: {category: "Item X", period: "Period A", value: 100} and
+         {category: "Item X", period: "Period B", value: 200}.
+       - TransposedTable: Fields as rows, records as columns. Transpose: each column is a
+         record, each row label is a field name.
     2. Extract all data rows (exclude headers and aggregation rows like totals).
-    3. Map each row's columns to the canonical schema using column names, aliases, and descriptions.
+    3. Match source columns to canonical columns using names, aliases, and descriptions.
     4. Coerce values to expected types (e.g. "1,234" -> 1234 for int, dates to ISO 8601).
     5. List any source columns that could not be mapped.
     6. CONTEXT INFERENCE: If a canonical column cannot be matched to any source column
@@ -297,7 +430,16 @@ function InterpretTable(compressed_text: string, schema: CanonicalSchema, model_
          Medium = inferred from context with reasonable certainty,
          Low = best guess or ambiguous)
     8. Set metadata.model to "{{ model_name }}" (it will be provided).
-    9. If the text had section labels, list them in metadata.sections_detected.
+    9. If the text had section labels, list them in metadata.sections_detected and set
+       metadata.section_role to:
+       - "context" if there is only ONE section label that applies to all rows
+       - "grouping" if there are MULTIPLE section labels that partition rows into groups
+    10. Populate metadata.table_type_inference with:
+        - table_type: The table structure type you identified in step 1
+        - rationale: Explain why this classification applies, citing specific structural evidence.
+          For FlatHeader vs HierarchicalHeader, explicitly state whether parent cells span
+          horizontally across multiple child columns or not.
+        - confidence: High if structure is unambiguous, Medium if some irregularities, Low if uncertain
 
     Important:
     - Keep values faithful to the source; only reformat for type coercion.

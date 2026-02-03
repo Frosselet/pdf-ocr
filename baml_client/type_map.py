@@ -49,6 +49,9 @@ type_map = {
     "types.Resume": types.Resume,
     "stream_types.Resume": stream_types.Resume,
 
+    "types.TableTypeInference": types.TableTypeInference,
+    "stream_types.TableTypeInference": stream_types.TableTypeInference,
+
 
     "types.AggregationType": types.AggregationType,
 

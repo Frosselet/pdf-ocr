@@ -23,7 +23,7 @@ class StreamState(BaseModel, typing.Generic[StreamStateValueT]):
     value: StreamStateValueT
     state: typing_extensions.Literal["Pending", "Incomplete", "Complete"]
 # #########################################################################
-# Generated classes (11)
+# Generated classes (12)
 # #########################################################################
 
 class AggregationInfo(BaseModel):
@@ -48,19 +48,22 @@ class FieldMapping(BaseModel):
     confidence: typing.Optional[types.Confidence] = None
 
 class HeaderInfo(BaseModel):
-    levels: typing.Optional[int] = Field(default=None, description='Number of header levels (1 for flat, >1 for hierarchical)')
-    names: typing.List[typing.List[str]] = Field(description='Header names per level, outer = level, inner = columns')
+    levels: typing.Optional[int] = Field(default=None, description='Number of header rows. For FlatHeader with stacked/multiline labels, this counts the text rows but names[][] should contain the combined column names. For HierarchicalHeader, this counts the hierarchy depth.')
+    names: typing.List[typing.List[str]] = Field(description='Header names per level, outer = level, inner = columns. For FlatHeader (even with multiline labels), use a single level with combined names. For HierarchicalHeader, each level represents a tier in the tree.')
 
 class InferredTableSchema(BaseModel):
-    column_names: typing.List[str] = Field(description='Column headers as they visually appear in the table, left to right. For multi-line headers, combine stacked labels into a single name per column (e.g. \'Date / Arrival\' or \'Quantity MT\').')
+    column_names: typing.List[str] = Field(description='Column headers as they visually appear in the table, left to right. For stacked/multiline headers, combine the vertically stacked labels into a single name per column (e.g. \'Unique Slot Reference Number\'). For hierarchical headers with spanning parents, use compound paths (e.g. \'Q1 2025 / Revenue\').')
     column_count: typing.Optional[int] = Field(default=None, description='Total number of data columns')
-    header_levels: typing.Optional[int] = Field(default=None, description='Number of header rows (1 for flat, >1 for stacked/multi-line headers)')
-    notes: typing.Optional[str] = Field(default=None, description='Observations about the header structure: merged cells, stacked labels, visual groupings, etc.')
+    header_levels: typing.Optional[int] = Field(default=None, description='Number of header rows (1 for single-row, >1 for stacked/multiline or hierarchical)')
+    has_spanning_headers: typing.Optional[bool] = Field(default=None, description='True if parent cells span multiple child columns (hierarchical). False if headers are just stacked text with no spanning (multiline flat).')
+    notes: typing.Optional[str] = Field(default=None, description='Observations about the header structure: merged cells, stacked labels, spanning parent cells, visual groupings, etc.')
 
 class InterpretationMetadata(BaseModel):
     model: typing.Optional[str] = Field(default=None, description='Model that produced this result, e.g. \'openai/gpt-4o\'')
+    table_type_inference: typing.Optional["TableTypeInference"] = Field(default=None, description='The inferred table type with rationale explaining the classification')
     field_mappings: typing.List["FieldMapping"] = Field(description='One entry per canonical column, explaining how it was resolved')
     sections_detected: typing.Optional[typing.List[str]] = Field(default=None, description='Section/group labels found in the text, if any (e.g. [\'GERALDTON\', \'KWINANA\'])')
+    section_role: typing.Optional[str] = Field(default=None, description='\'context\' if a single section label applies to all rows, \'grouping\' if multiple labels partition rows into groups')
 
 class MappedRecord(BaseModel):
     model_config = ConfigDict(extra='allow')
@@ -83,6 +86,11 @@ class Resume(BaseModel):
     email: typing.Optional[str] = None
     experience: typing.List[str]
     skills: typing.List[str]
+
+class TableTypeInference(BaseModel):
+    table_type: typing.Optional[types.TableType] = Field(default=None, description='The inferred table structure type')
+    rationale: typing.Optional[str] = Field(default=None, description='Brief explanation of why this table type was chosen, citing specific structural evidence')
+    confidence: typing.Optional[types.Confidence] = Field(default=None, description='How confident the inference is based on structural clarity')
 
 # #########################################################################
 # Generated type aliases (0)
