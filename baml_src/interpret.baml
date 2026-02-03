@@ -4,10 +4,10 @@
 // ─── Enums ───────────────────────────────────────────────────────────────────
 
 enum TableType {
-  FlatHeader @description("Independent columns with no spanning parent cells. Header text may span multiple rows (stacked/multiline labels) but each column stands alone — combine stacked text into one name per column. 1:1 row-to-record mapping.")
-  HierarchicalHeader @description("Tree-structured headers where parent cells span multiple child columns (e.g. 'Q1 2025' spanning 'Revenue' and 'Costs'). Column names are compound paths (e.g. 'Q1 2025 / Revenue'). 1:1 row-to-record mapping. Note: multiline headers with no spanning are FlatHeader, not this.")
-  PivotedTable @description("Categories as rows, time periods or attributes as columns — requires unpivoting: each source row produces multiple output records, one per value column")
-  TransposedTable @description("Fields as rows, records as columns — requires transposition: each column becomes a record, each row becomes a field")
+  FlatHeader @description("Standard table: headers in top row(s), data in subsequent rows. Each column is independent (no spanning parent cells). Header text may wrap across multiple rows vertically but each column stands alone. 1:1 row-to-record mapping. Key sign: first column contains different values per row (IDs, names, categories).")
+  HierarchicalHeader @description("Tree-structured headers where parent cells span horizontally across multiple child columns (e.g. 'Q1 2025' spanning 'Revenue' and 'Costs'). Column names become compound paths (e.g. 'Q1 2025 / Revenue'). 1:1 row-to-record mapping. Key sign: header row has FEWER cells than data rows because parents span multiple children. Note: stacked/multiline headers with no horizontal spanning are FlatHeader, not this.")
+  PivotedTable @description("Cross-tabulation: row labels are categories, column headers are time periods or attributes, cells are values. Requires unpivoting: each source row produces multiple output records (one per value column). Key sign: column headers are dates, periods, or repeated attribute names; first column contains category labels; cells contain numeric values.")
+  TransposedTable @description("Property sheet layout: field NAMES as rows (left column), field VALUES as columns. Each column (after the label column) represents a complete record. Requires transposition: each column becomes one output record, each row provides one field. Key signs: (1) first column contains field names like 'Name', 'Date', 'Status', 'Total'; (2) subsequent columns contain the corresponding values; (3) rows are heterogeneous (mix of dates, numbers, text) because each row is a different field type.")
   Unknown @description("Ambiguous structure — use best judgment based on content")
 }
 
@@ -112,57 +112,48 @@ function AnalyzeAndParseTable(compressed_text: string) -> ParsedTable {
     You are a table-structure analyst. Given compressed text extracted from a PDF,
     identify the table structure and parse all data rows.
 
-    DETECTING HEADER STRUCTURE:
+    === DATA-FIRST APPROACH ===
 
-    Before classifying, examine the header rows carefully:
+    The data rows are the ground truth for column structure. Analyze them FIRST:
 
-    1. STACKED/MULTILINE (→ FlatHeader):
-       - Each column has text that wraps across multiple rows vertically
-       - BUT each column is independent — no cell spans multiple columns horizontally
-       - Example: "Unique Slot" / "Reference" / "Number" stacked vertically = one column
-         named "Unique Slot Reference Number"
-       - Key sign: The number of text fragments per row equals the number of columns
+    STEP 1: COUNT DATA COLUMNS
+    - Find the pipe table (rows with | delimiters)
+    - Count cells in the FIRST data row (after |---|---| separator)
+    - This is your AUTHORITATIVE column count
 
-    2. GROUPED/SPANNING (→ HierarchicalHeader):
-       - A parent header cell spans HORIZONTALLY across multiple child columns
-       - Children are sibling columns that share a common parent cell above them
-       - Example: "Date" spanning over "Nominated" and "Accepted" = compound names
-         "Date / Nominated" and "Date / Accepted"
-       - Key sign: A header row has FEWER cells than the data rows because parents span
+    STEP 2: IDENTIFY DATA TYPES PER COLUMN
+    - Look at values in each column position across multiple data rows
+    - Identify: dates, times, numbers, text, codes, status words, etc.
+    - Note any concatenated values (e.g. "1500 Category A" = number + text = 2 columns)
 
-    KEY TEST: Do sibling columns share a common parent cell above them that spans
-    horizontally? If YES → HierarchicalHeader. If NO → FlatHeader (even with multiline text).
+    STEP 3: MAP HEADERS TO DATA COLUMNS
+    - Look at the header lines ABOVE the pipe table
+    - For stacked/multiline headers, combine vertically aligned text:
+      "Unique Slot" / "Reference" / "Number" → "Unique Slot Reference Number"
+    - You MUST produce exactly as many header names as data columns
 
-    Steps:
-    1. Determine the table type using the header structure tests above:
-       - FlatHeader: Each column has its own independent header. This includes tables with
-         stacked/multiline headers where text is split across multiple rows but each column
-         stands alone (combine the stacked text into one name per column).
-       - HierarchicalHeader: Parent header cells SPAN multiple child columns in a tree
-         structure (e.g. "Q1 2025" spanning over "Revenue" and "Costs" columns beneath it).
-         The key distinction is HORIZONTAL SPANNING — siblings share a common parent cell.
-       - PivotedTable: Row labels are categories, column headers are time periods or
-         attributes — requires unpivoting.
-       - TransposedTable: Field names as rows, records as columns — requires transposition.
-       - Unknown: Ambiguous structure.
-    2. Extract headers — for hierarchical tables, capture each level separately. For flat
-       tables with stacked/multiline headers, combine the text into single column names.
-    3. Identify any aggregation rows/columns (totals, subtotals, averages, etc.) and separate them.
-    4. Parse every data row into an array of string cell values, preserving the original order.
-    5. If the text contains multiple table sections separated by labels or headers
-       (e.g. data grouped by category, region, time period, or any other dimension),
-       record each section label and which data rows belong to it in the notes field.
-       Format: "Sections: <label1> (rows 0-N), <label2> (rows N+1-M), ..."
+    === TABLE TYPE CLASSIFICATION ===
 
-    Important:
-    - Keep cell values as strings exactly as they appear (do not reformat numbers or dates).
-    - Exclude header rows and aggregation rows from data_rows.
-    - Include ALL other rows, even if they have empty cells, dashes, "N/A", zero or
-      missing values, or unusual-looking content. If a row occupies a data position in
-      the table it is a data row — do not filter based on cell content.
-    - If the table has merged cells or spans, repeat the value for each spanned column.
-    - Multiline/stacked headers (where column names wrap across rows but each column is
-      independent) should be classified as FlatHeader, NOT HierarchicalHeader.
+    - FlatHeader: Each column independent, even with stacked/multiline header text.
+      Header text may span multiple rows vertically but no cell spans horizontally.
+    - HierarchicalHeader: Parent cells SPAN HORIZONTALLY across multiple child columns.
+      Key sign: A header row has FEWER cells than data rows because parents span.
+    - PivotedTable: Row labels are categories, columns are time periods/attributes.
+    - TransposedTable: Field names as rows, records as columns.
+
+    === PARSING RULES ===
+
+    1. headers.names MUST have exactly column_count entries (one per data column)
+    2. Each data_row MUST have exactly column_count cells
+    3. If a pipe cell contains concatenated values that span multiple columns,
+       SPLIT them to maintain consistent column count
+    4. Exclude aggregation rows (totals, subtotals) from data_rows
+    5. Keep cell values as strings exactly as they appear
+    6. Include ALL data rows even with empty cells, dashes, "N/A", or zeros
+
+    SECTION LABELS:
+    If the text has sections (e.g. data grouped by region, category, etc.),
+    record in notes: "Sections: <label1> (rows 0-N), <label2> (rows N+1-M), ..."
 
     Compressed text:
     ---
@@ -181,59 +172,50 @@ function InferTableSchemaFromImage(page_img: image, compressed_text: string) -> 
     1. An image of a PDF page containing a table
     2. Compressed text extracted from the same page (which may have parsing errors)
 
-    Your task: determine the COMPLETE table column structure by combining
-    evidence from BOTH the image and the compressed text.
+    Your task: determine the COMPLETE table column structure. Use a DATA-FIRST
+    approach — the data rows are the ground truth for column count.
 
-    DETECTING HEADER STRUCTURE:
+    === STEP 1: ANALYZE DATA ROWS (Ground Truth) ===
 
-    Before setting has_spanning_headers, examine the header area carefully:
+    Look at the DATA ROWS in the image (below the headers):
+    1. Pick a complete data row and count the distinct columns visually
+    2. Note column boundaries — where values end and new values begin
+    3. Identify the DATA TYPE in each column:
+       - Dates (DD/MM/YYYY, YYYY-MM-DD, etc.)
+       - Times (HH:MM, HH:MM:SS AM/PM)
+       - Numbers (quantities, IDs, codes)
+       - Text (names, descriptions, status words)
+       - Mixed (e.g. "1500 Category A" = number + text = likely 2 columns concatenated)
 
-    1. STACKED/MULTILINE (→ has_spanning_headers=false):
-       - Each column has text that wraps across multiple rows vertically
-       - BUT each column is independent — no cell spans multiple columns horizontally
-       - Example: "Unique Slot" / "Reference" / "Number" stacked vertically = one column
-         named "Unique Slot Reference Number"
-       - Key visual sign: Column dividers run continuously from top to bottom of header
+    The number of distinct data columns is your AUTHORITATIVE column_count.
 
-    2. GROUPED/SPANNING (→ has_spanning_headers=true):
-       - A parent header cell spans HORIZONTALLY across multiple child columns
-       - Children are sibling columns that share a common parent cell above them
-       - Example: "Date" spanning over "Nominated" and "Accepted" = compound names
-         "Date / Nominated" and "Date / Accepted"
-       - Key visual sign: A cell in an upper row is wider than cells below it,
-         with column dividers only appearing in the lower rows
+    === STEP 2: VALIDATE WITH COMPRESSED TEXT ===
 
-    KEY TEST: Do sibling columns share a common parent cell above them that spans
-    horizontally? If YES → has_spanning_headers=true. If NO → false (even with multiline text).
+    Count pipe-separated cells in the FIRST data row of the compressed text
+    (the row after |---|---|). Compare to your visual count:
+    - If text has FEWER cells → some values are concatenated in text
+    - If text has MORE cells → you may have missed narrow columns visually
+    - Note any concatenations (e.g. "7:00 PM Company X" = time + text = 2 columns)
 
-    CRITICAL: Dense tables with small fonts often have narrow columns that are
-    easy to miss visually. You MUST cross-validate your column list against the
-    data rows in the compressed text.
+    === STEP 3: MAP HEADERS TO DATA COLUMNS ===
 
-    Steps:
-    1. Count the pipe-separated cells in the FIRST data row of the compressed
-       text (the row after the |---|---| separator). This gives you the MINIMUM
-       number of columns — some cells may be concatenated (two values joined
-       into one cell), so the actual column count may be HIGHER.
-    2. Find the table header area in the image. Read EVERY column header left
-       to right. Pay special attention to narrow single-word columns between
-       wider multi-word columns — these are commonly missed.
-       - For stacked/multiline headers (text split across rows but each column
-         independent), combine the vertically stacked labels into one name
-         (e.g. "Unique Slot" + "Reference" + "Number" → "Unique Slot Reference Number").
-       - For hierarchical headers (parent cells spanning horizontally across
-         multiple child columns), use compound paths (e.g. "Q1 2025 / Revenue").
-    3. Apply the header structure test above to set has_spanning_headers.
-    4. Cross-reference with the garbled header lines in the compressed text
-       (the lines above the pipe table). Header fragments like individual
-       words (e.g. "ID", "STATUS", "CODE") often correspond to real
-       columns that may appear narrow in the image.
-    5. Verify: your column_count MUST be >= the number of pipe-separated cells
-       in the data rows. If it is less, you have missed columns — re-examine
-       the image and text headers.
-    6. Note how many header rows exist and any structural observations,
-       including which data cells appear concatenated (e.g. "42 Smith"
-       containing values for two columns).
+    Now look at the header area and assign a name to EACH data column:
+    1. For stacked/multiline headers, combine vertically aligned text into one name
+       (e.g. "Unique Slot" / "Reference" / "Number" → "Unique Slot Reference Number")
+    2. For hierarchical headers with horizontal spanning, use compound paths
+       (e.g. "Date" spanning "Nominated" and "Accepted" → "Date / Nominated", "Date / Accepted")
+    3. If a header is unclear, infer from the data type (e.g. column with dates
+       and no clear header might be "Date" or "ETA")
+
+    CRITICAL: column_names array length MUST equal column_count from Step 1.
+
+    === STEP 4: DETERMINE HEADER STRUCTURE ===
+
+    Set has_spanning_headers based on visual header structure:
+    - FALSE (stacked/multiline): Column dividers run continuously top-to-bottom,
+      each column independent even if header text spans multiple rows vertically
+    - TRUE (hierarchical): Parent cells span horizontally across multiple child
+      columns, column dividers only appear in lower rows under the spanning cell
 
     {{ ctx.output_format }}
 
@@ -263,8 +245,8 @@ function AnalyzeAndParseTableGuided(compressed_text: string, visual_schema: Infe
     cell. Use the visual schema's column_names and column_count to:
     - Correctly identify which part of the text corresponds to which column
     - Split concatenated values when the column count in a row doesn't match
-      the expected count (e.g. "33020 WHEAT" should become two cells: "33020"
-      and "WHEAT" if they map to separate columns)
+      the expected count (e.g. "1500 Category A" should become two cells: "1500"
+      and "Category A" if they map to separate columns)
     - Use the visual schema's column names as the authoritative header names
 
     Steps:
@@ -319,8 +301,14 @@ function MapToCanonicalSchema(parsed_table: ParsedTable, schema: CanonicalSchema
       Example: a row "Item X | 100 | 200" with columns "Category | Period A | Period B"
       becomes TWO records: {category: "Item X", period: "Period A", value: 100} and
       {category: "Item X", period: "Period B", value: 200}.
-    - TransposedTable: Fields are rows, records are columns. Transpose before mapping:
-      each column (after the first) is a separate record, each row label is a field name.
+    - TransposedTable: Field names are in the FIRST COLUMN, values are in subsequent columns.
+      You must TRANSPOSE before mapping:
+      1. The first column contains field names — these become your "headers" for alias matching
+      2. Each subsequent column is ONE COMPLETE RECORD
+      3. Match each row's first-column label against canonical column aliases
+      4. Example: If rows are "Name | Alice | Bob" and "Status | Active | Inactive",
+         produce TWO records: {name: "Alice", status: "Active"} and {name: "Bob", status: "Inactive"}
+      5. EVERY row label must be checked against ALL canonical column aliases
     - Unknown: Use best judgment based on the data structure.
 
     General mapping rules:
@@ -409,8 +397,12 @@ function InterpretTable(compressed_text: string, schema: CanonicalSchema, model_
          a field value. Example: "Item X | 100 | 200" with columns "Category | Period A | Period B"
          becomes TWO records: {category: "Item X", period: "Period A", value: 100} and
          {category: "Item X", period: "Period B", value: 200}.
-       - TransposedTable: Fields as rows, records as columns. Transpose: each column is a
-         record, each row label is a field name.
+       - TransposedTable: Field names in FIRST COLUMN, values in subsequent columns. TRANSPOSE:
+         (1) First column labels become "headers" for alias matching
+         (2) Each subsequent column is ONE COMPLETE RECORD
+         (3) Match each row label against canonical column aliases
+         (4) Example: rows "Name | Alice | Bob" and "Status | Active | Inactive" →
+             TWO records: {name: "Alice", status: "Active"}, {name: "Bob", status: "Inactive"}
     2. Extract all data rows (exclude headers and aggregation rows like totals).
     3. Match source columns to canonical columns using names, aliases, and descriptions.
     4. Coerce values to expected types (e.g. "1,234" -> 1234 for int, dates to ISO 8601).

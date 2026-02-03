@@ -315,13 +315,13 @@ Each page is rendered as an image (150 DPI) and a vision-capable LLM reads the c
 
 The pipeline recognises five structural patterns, each with a specific mapping strategy:
 
-| Type | Description | Mapping Strategy |
-|---|---|---|
-| `FlatHeader` | Single header row, regular data rows | 1:1 — each source row becomes one output record |
-| `HierarchicalHeader` | Multi-level headers with spanning groups | 1:1 — compound column names (e.g., "Q1 / Revenue") matched against aliases |
-| `PivotedTable` | Categories as rows, periods/attributes as columns | **Unpivot** — each source row produces N records (one per value column); column headers become field values |
-| `TransposedTable` | Fields as rows, records as columns | **Transpose** — each column becomes a record, each row becomes a field |
-| `Unknown` | Fallback for ambiguous structures | Best-effort based on content |
+| Type | Description | Key Signs | Mapping Strategy |
+|---|---|---|---|
+| `FlatHeader` | Standard table: headers in top row(s), data in subsequent rows. Each column independent. | First column has different values per row (IDs, names). Header row count ≈ data row cell count. | 1:1 — each source row → one output record |
+| `HierarchicalHeader` | Tree-structured headers with parent cells spanning multiple children horizontally. | Header row has FEWER cells than data rows (parents span). Compound column names needed. | 1:1 — compound names (e.g., "Q1 / Revenue") matched against aliases |
+| `PivotedTable` | Cross-tabulation: categories as rows, time periods/attributes as columns, values in cells. | Column headers are dates/periods. First column has category labels. Cells are numeric values. | **Unpivot** — each row → N records (one per value column); column headers become field values |
+| `TransposedTable` | Property sheet: field NAMES as rows (left column), field VALUES as columns. Each column is one record. | First column contains field names (Name, Date, Status). Rows are heterogeneous (different types per row). | **Transpose** — each column → one record; each row → one field |
+| `Unknown` | Ambiguous structure | Cannot determine pattern | Best-effort based on content |
 
 **Why table type matters for mapping**: The `AnalyzeAndParseTable` step classifies the table structure and includes this in the `ParsedTable` output. The `MapToCanonicalSchema` step then uses this classification to apply the correct transformation:
 

@@ -70,6 +70,10 @@ Exploratory notebook demonstrating PDF parsing approaches and the spatial text r
 - The `baml_client/` directory is fully generated; changes belong in `baml_src/`
 - **Always regenerate the BAML client** after editing any file in `baml_src/` by running `uv run baml-cli generate`
 
-## Prompt Guidelines
+## BAML Guidelines
+
+- **Mandatory descriptions**: Every BAML `enum` value and `class` field that influences LLM behavior MUST have a `@description()` annotation. These descriptions are embedded in LLM prompts and are critical for correct classification (e.g., `TableType.TransposedTable` must explain what a transposed table looks like so the model can identify it). Missing descriptions cause misclassification bugs.
 
 - **Domain-agnostic examples**: All examples in BAML prompt templates must use generic, domain-neutral terms (e.g., "Item X", "Category", "Period A", "value") rather than domain-specific terminology (e.g., "Wheat", "Commodity", "Oct 2025", "volume"). This prevents biasing the model toward any specific document type at runtime and ensures the prompts work well across diverse use cases.
+
+- **Keep descriptions and README in sync**: The `TableType` enum descriptions in `interpret.baml` must match the table in `src/pdf_ocr/README.md` under "Table Types and Mapping Strategies". When updating one, update the other.
