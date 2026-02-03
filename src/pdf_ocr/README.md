@@ -301,6 +301,8 @@ Step 2 (unchanged): ParsedTable → MappedTable
 
 Each page is rendered as an image (150 DPI) and a vision-capable LLM reads the correct column headers from the visual layout. The vision prompt cross-validates between the image and the compressed text: it first counts pipe-separated cells in the data rows to establish a minimum column count, then reads headers from the image paying attention to narrow columns that are easily missed, and finally verifies that the inferred column count is at least as large as the pipe-cell count. Step 1 then uses the guided variant (`AnalyzeAndParseTableGuided`) with the inferred schema to split compound values into the correct columns. The guided prompt includes the same section boundary format specification as the unguided variant so that section-aware batching and section boundary validation work identically. When `pdf_path` is omitted, the pipeline behaves exactly as before (no vision overhead). An optional `vision_model=` parameter allows using a different model for the vision step. Note: the vision prompt examples use domain-neutral terms to avoid biasing the model toward any specific document type.
 
+**Vision cross-validation**: Vision mode should add clarity, not regress quality. After step 1 (guided parsing), we verify that parsed rows have exactly `vision_column_count` cells. If the cell count doesn't match (e.g., vision inferred 23 columns but guided parsing produced 21 cells), the guidance failed — we fall back to non-vision parsing for that page. This ensures vision only helps, never hurts: if vision-guided parsing can't produce rows matching the column count that vision specified, the non-vision path works directly from the data without that broken constraint.
+
 **Multi-page auto-split**: Both `interpret_table` and `interpret_table_single_shot` automatically split input on the page separator (`\f` by default). When multiple pages are detected, all pages are processed **concurrently** via the async BAML client and `asyncio.gather()`, then results are merged into a single `MappedTable`. Single-page input with few rows is processed synchronously with no event loop overhead.
 
 **Step-2 batching** (`interpret_table` only): After step 1 parses each page's rows, step 2 splits them into batches of `batch_size` rows (default 20) before calling the mapping LLM. This prevents output truncation on dense pages — e.g., a page with 78 data rows becomes 4 batches of 20. All batches across all pages run concurrently. Batching is section-aware: when step 1's notes contain section boundaries, rows are split at section edges when possible, and each batch receives re-indexed notes with only its relevant sections. Large sections are split internally at `batch_size` boundaries.
@@ -309,17 +311,25 @@ Each page is rendered as an image (150 DPI) and a vision-capable LLM reads the c
 
 **Page-keyed results**: `interpret_table()` and `interpret_table_single_shot()` return `dict[int, MappedTable]` keyed by 1-indexed page number. Each page gets its own complete result (records, unmapped columns, mapping notes, metadata). Records contain only canonical schema fields — no internal metadata. Use `to_records(result)` to flatten all pages into a single list, or `to_records_by_page(result)` for `{page: [dicts]}`.
 
-### Table Types
+### Table Types and Mapping Strategies
 
-The pipeline recognises five structural patterns:
+The pipeline recognises five structural patterns, each with a specific mapping strategy:
 
-| Type | Description | Example |
+| Type | Description | Mapping Strategy |
 |---|---|---|
-| `FlatHeader` | Single header row, regular data rows | Standard shipping stem |
-| `HierarchicalHeader` | Multi-level headers with spanning groups | Quarterly report with "Q1 / Revenue / Costs" |
-| `PivotedTable` | Categories as rows, periods/attributes as columns | Commodity volumes by month |
-| `TransposedTable` | Fields as rows, records as columns | Single-entity property sheet |
-| `Unknown` | Fallback for ambiguous structures | — |
+| `FlatHeader` | Single header row, regular data rows | 1:1 — each source row becomes one output record |
+| `HierarchicalHeader` | Multi-level headers with spanning groups | 1:1 — compound column names (e.g., "Q1 / Revenue") matched against aliases |
+| `PivotedTable` | Categories as rows, periods/attributes as columns | **Unpivot** — each source row produces N records (one per value column); column headers become field values |
+| `TransposedTable` | Fields as rows, records as columns | **Transpose** — each column becomes a record, each row becomes a field |
+| `Unknown` | Fallback for ambiguous structures | Best-effort based on content |
+
+**Why table type matters for mapping**: The `AnalyzeAndParseTable` step classifies the table structure and includes this in the `ParsedTable` output. The `MapToCanonicalSchema` step then uses this classification to apply the correct transformation:
+
+- For **pivoted tables**, the model must understand that a single source row like `"Product A | 100 | 200"` with columns `"Category | Jan | Feb"` should produce **two** output records when the schema expects `(category, period, value)` — one for January, one for February. Without explicit guidance, models often try to find a "period" column that doesn't exist.
+
+- For **transposed tables**, the model inverts the usual row/column relationship — useful for property sheets where each row is a field name and each column is a different entity.
+
+The table type descriptions are embedded in the BAML enum annotations, so the LLM has context about what each type means when parsing and when mapping.
 
 ### Dynamic Schema via TypeBuilder
 
@@ -405,6 +415,10 @@ All interpretation functions accept `model` and `fallback_model` keyword argumen
 - **`mapping_notes`** — optional notes about ambiguous matches or type coercion issues.
 - **`metadata`** — an `InterpretationMetadata` object with:
   - **`model`** — the model that produced the result (e.g. `"openai/gpt-4o"`).
+  - **`table_type_inference`** — a `TableTypeInference` object explaining why the table structure was classified:
+    - `table_type` — the inferred type (`FlatHeader`, `HierarchicalHeader`, `PivotedTable`, `TransposedTable`, or `Unknown`)
+    - `rationale` — brief explanation citing structural evidence (e.g. "Single header row followed by uniform data rows")
+    - `confidence` — `High` (unambiguous structure), `Medium` (some irregularities), or `Low` (uncertain)
   - **`field_mappings`** — one `FieldMapping` per canonical column, each containing:
     - `column_name` — the canonical column name
     - `source` — where the value came from (e.g. `"column: Ship Name"`, `"section header"`, `"document title"`)

@@ -618,6 +618,7 @@ def _merge_mapped_tables(tables: list[baml_types.MappedTable]) -> baml_types.Map
 
     merged_metadata = baml_types.InterpretationMetadata(
         model=first_meta.model,
+        table_type_inference=first_meta.table_type_inference,
         field_mappings=first_meta.field_mappings,
         sections_detected=merged_sections,
     )
@@ -721,6 +722,27 @@ async def _interpret_pages_batched_async(
             log.info("  Step 1 page %d headers[%d]: %s", pi + 1, lvl, names)
         if pt.data_rows:
             log.info("  Step 1 page %d row[0] (%d cells): %s", pi + 1, len(pt.data_rows[0]), pt.data_rows[0])
+
+    # Cross-validate: check parsed row cell counts match vision column count
+    if visual_schemas is not None:
+        for pi, (pt, vs) in enumerate(zip(parsed_tables, visual_schemas)):
+            if pt.data_rows:
+                row_len = len(pt.data_rows[0])
+                if row_len != vs.column_count:
+                    log.warning(
+                        "Step 1 page %d: guided parsing produced %d cells but vision "
+                        "inferred %d columns — falling back to non-vision parsing",
+                        pi + 1, row_len, vs.column_count,
+                    )
+                    # Re-parse this page without vision guidance
+                    fallback_parsed = await analyze_and_parse_async(
+                        pages[pi], model=model, fallback_model=fallback_model
+                    )
+                    parsed_tables[pi] = fallback_parsed
+                    log.info(
+                        "Step 1 page %d: fallback produced %d cells",
+                        pi + 1, len(fallback_parsed.data_rows[0]) if fallback_parsed.data_rows else 0,
+                    )
 
     # Validate section boundaries against compressed text
     for pi, pt in enumerate(parsed_tables):
