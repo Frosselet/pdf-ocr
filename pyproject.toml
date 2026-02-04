@@ -15,6 +15,7 @@ dependencies = [
     "jupyter>=1.1.1",
     "pydantic>=2.0",
     "pymupdf4llm>=0.2.9",
+    "rapidfuzz>=3.14.3",
 ]
 
 [tool.hatch.build.targets.wheel]

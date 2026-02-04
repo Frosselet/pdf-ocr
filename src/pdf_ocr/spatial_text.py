@@ -9,8 +9,23 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import fitz  # PyMuPDF
+
+
+def _open_pdf(pdf_input: str | bytes | Path) -> fitz.Document:
+    """Open a PDF from various input types.
+
+    Args:
+        pdf_input: Path string, Path object, or raw PDF bytes.
+
+    Returns:
+        An open fitz.Document.
+    """
+    if isinstance(pdf_input, bytes):
+        return fitz.open(stream=pdf_input, filetype="pdf")
+    return fitz.open(pdf_input)
 
 
 @dataclass
@@ -121,7 +136,7 @@ def _render_page_grid(page: fitz.Page, cluster_threshold: float = 2.0) -> str:
 
 
 def pdf_to_spatial_text(
-    pdf_path: str,
+    pdf_input: str | bytes | Path,
     *,
     pages: list[int] | None = None,
     cluster_threshold: float = 2.0,
@@ -130,7 +145,7 @@ def pdf_to_spatial_text(
     """Convert a PDF to spatial text preserving visual layout.
 
     Args:
-        pdf_path: Path to the PDF file.
+        pdf_input: Path to PDF file (str or Path), or raw PDF bytes.
         pages: Optional list of 0-based page indices to render.
             If None, all pages are rendered.
         cluster_threshold: Maximum y-distance (in points) to merge into
@@ -140,9 +155,10 @@ def pdf_to_spatial_text(
     Returns:
         A single string with all rendered pages joined by *page_separator*.
     """
-    doc = fitz.open(pdf_path)
+    doc = _open_pdf(pdf_input)
     page_indices = pages if pages is not None else range(len(doc))
     rendered: list[str] = []
     for idx in page_indices:
         rendered.append(_render_page_grid(doc[idx], cluster_threshold))
+    doc.close()
     return page_separator.join(rendered)

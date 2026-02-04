@@ -74,14 +74,13 @@ class FieldMapping {
 }
 
 class TableTypeInference {
-  table_type TableType          @description("The inferred table structure type")
-  rationale string              @description("Brief explanation of why this table type was chosen, citing specific structural evidence")
-  confidence Confidence         @description("How confident the inference is based on structural clarity")
+  table_type TableType          @description("Table type from Step 1 (do not re-classify)")
+  mapping_strategy_used string  @description("Which mapping strategy was applied: '1:1 row mapping', 'unpivot', 'transpose'")
 }
 
 class InterpretationMetadata {
   model string                  @description("Model that produced this result, e.g. 'openai/gpt-4o'")
-  table_type_inference TableTypeInference @description("The inferred table type with rationale explaining the classification")
+  table_type_inference TableTypeInference @description("The table type from Step 1 and which mapping strategy was applied")
   field_mappings FieldMapping[] @description("One entry per canonical column, explaining how it was resolved")
   sections_detected string[]?   @description("Section/group labels found in the text, if any (e.g. ['GERALDTON', 'KWINANA'])")
   section_role string?          @description("'context' if a single section label applies to all rows, 'grouping' if multiple labels partition rows into groups")
@@ -293,8 +292,23 @@ function MapToCanonicalSchema(parsed_table: ParsedTable, schema: CanonicalSchema
 
     Mapping strategy by table type:
     - FlatHeader: Map each data row directly to one output record. Columns align 1:1.
-    - HierarchicalHeader: Column names may be compound from merged headers (e.g. "Q1 / Revenue").
-      Match the full compound name against aliases. Each data row produces one record.
+    - HierarchicalHeader: Column names may be compound from merged headers (e.g. "Q1 2025 / Revenue").
+      First, check if canonical column aliases match PARTS of compound names:
+      - If canonical columns have aliases that match the parent/child parts of compound headers
+        (e.g., "category" aliases ["Q1 2025", "Q2 2025"] and "metric" aliases ["Revenue", "Costs"]
+        match parts of "Q1 2025 / Revenue", "Q2 2025 / Costs"), you must UNPIVOT:
+        Each data row produces MULTIPLE records (one per value column).
+        The parent and child parts of each compound header become field values.
+        Example: row "Region A | 100 | 200 | 150 | 180" with columns
+        "Label | Q1 2025 / Revenue | Q1 2025 / Costs | Q2 2025 / Revenue | Q2 2025 / Costs"
+        and schema {label, category (aliases: Q1 2025, Q2 2025), metric (aliases: Revenue, Costs), value}
+        becomes FOUR records:
+        - {label: "Region A", category: "Q1 2025", metric: "Revenue", value: 100}
+        - {label: "Region A", category: "Q1 2025", metric: "Costs", value: 200}
+        - {label: "Region A", category: "Q2 2025", metric: "Revenue", value: 150}
+        - {label: "Region A", category: "Q2 2025", metric: "Costs", value: 180}
+      - If no canonical aliases match parts of compound headers, match the full compound name
+        against aliases and produce one record per data row.
     - PivotedTable: Categories are rows, time periods or attributes are columns. You must UNPIVOT:
       for each data row, produce ONE OUTPUT RECORD PER VALUE COLUMN. The column header becomes
       a field value (e.g. column "Period A" → the "period" field gets value "Period A").
@@ -339,11 +353,8 @@ function MapToCanonicalSchema(parsed_table: ParsedTable, schema: CanonicalSchema
         - "context" if there is only ONE section label that applies to all rows
         - "grouping" if there are MULTIPLE section labels that partition rows into groups
     11. Populate metadata.table_type_inference with:
-        - table_type: Use the table type from parsed_table ({{ parsed_table.table_type }})
-        - rationale: Explain why this classification applies based on the table structure.
-          For FlatHeader vs HierarchicalHeader, explicitly state whether parent cells span
-          horizontally across multiple child columns or not.
-        - confidence: High if structure is unambiguous, Medium if some irregularities, Low if uncertain
+        - table_type: {{ parsed_table.table_type }} (use this exact value, do not re-classify)
+        - mapping_strategy_used: Describe which strategy you applied (e.g., "1:1 row mapping for FlatHeader", "unpivot for PivotedTable")
 
     Parsed table:
     {{ parsed_table }}
@@ -390,7 +401,10 @@ function InterpretTable(compressed_text: string, schema: CanonicalSchema, model_
          stands alone — combine the stacked text into one column name. Map each row to one record.
        - HierarchicalHeader: Parent header cells SPAN HORIZONTALLY across multiple child columns
          in a tree structure (e.g. "Q1 2025" spanning over "Revenue" and "Costs" columns beneath it).
-         Column names are compound paths (e.g. "Q1 2025 / Revenue"). Map each row to one record.
+         Column names are compound paths (e.g. "Q1 2025 / Revenue").
+         IMPORTANT: Check if canonical column aliases match PARTS of compound headers. If so, UNPIVOT:
+         each data row produces multiple records (one per value column), with parent/child parts
+         becoming field values. If no aliases match parts, map each row to one record.
          NOTE: Multiline/stacked headers with no horizontal spanning are FlatHeader, not this.
        - PivotedTable: Categories as rows, time periods or attributes as columns. UNPIVOT:
          for each data row, produce ONE RECORD PER VALUE COLUMN. The column header becomes
@@ -428,10 +442,7 @@ function InterpretTable(compressed_text: string, schema: CanonicalSchema, model_
        - "grouping" if there are MULTIPLE section labels that partition rows into groups
     10. Populate metadata.table_type_inference with:
         - table_type: The table structure type you identified in step 1
-        - rationale: Explain why this classification applies, citing specific structural evidence.
-          For FlatHeader vs HierarchicalHeader, explicitly state whether parent cells span
-          horizontally across multiple child columns or not.
-        - confidence: High if structure is unambiguous, Medium if some irregularities, Low if uncertain
+        - mapping_strategy_used: Describe which strategy you applied (e.g., "1:1 row mapping for FlatHeader", "unpivot for PivotedTable")
 
     Important:
     - Keep values faithful to the source; only reformat for type coercion.
@@ -562,6 +573,67 @@ test sectioned_table_context_inference {
           type "float"
           description "Price per unit"
           aliases ["Unit Price", "Price"]
+        }
+      ]
+    }
+    model_name "openai/gpt-4o"
+  }
+}
+
+// Test: HierarchicalHeader with unpivoting to normalized schema
+// This is a common pattern: compound column headers (Category / Period / Metric)
+// that need to be unpivoted into a normalized schema with separate columns for
+// the category, period, and value.
+test hierarchical_header_unpivot {
+  functions [MapToCanonicalSchema]
+  args {
+    parsed_table {
+      table_type HierarchicalHeader
+      headers {
+        levels 2
+        names [[
+          "Label",
+          "Category A / Period 1",
+          "Category A / Period 2",
+          "Category A / % change",
+          "Category B / Period 1",
+          "Category B / Period 2",
+          "Category B / % change"
+        ]]
+      }
+      aggregations null
+      data_rows [
+        ["Item X", "25,000", "22,000", "+13.6", "45,000", "52,000", "-13.5"],
+        ["Item Y", "48,000", "41,000", "+17.1", "62,000", "71,000", "-12.7"]
+      ]
+      notes "Sections: GROUP 1 (rows 0-1)"
+    }
+    schema {
+      description "Normalized data with category and period dimensions"
+      columns [
+        {
+          name "label"
+          type "string"
+          description "Row label or identifier"
+          aliases ["Label", "Name"]
+        },
+        {
+          name "category"
+          type "string"
+          description "Category type (extracted from compound column header)"
+          aliases ["Category A", "Category B", "Category C"]
+        },
+        {
+          name "period"
+          type "string"
+          description "Time period (extracted from compound column header)"
+          aliases ["Period 1", "Period 2"]
+        },
+        {
+          name "value"
+          type "int"
+          description "Numeric value"
+          aliases []
         }
       ]
     }

@@ -60,7 +60,7 @@ class InferredTableSchema(BaseModel):
 
 class InterpretationMetadata(BaseModel):
     model: typing.Optional[str] = Field(default=None, description='Model that produced this result, e.g. \'openai/gpt-4o\'')
-    table_type_inference: typing.Optional["TableTypeInference"] = Field(default=None, description='The inferred table type with rationale explaining the classification')
+    table_type_inference: typing.Optional["TableTypeInference"] = Field(default=None, description='The table type from Step 1 and which mapping strategy was applied')
     field_mappings: typing.List["FieldMapping"] = Field(description='One entry per canonical column, explaining how it was resolved')
     sections_detected: typing.Optional[typing.List[str]] = Field(default=None, description='Section/group labels found in the text, if any (e.g. [\'GERALDTON\', \'KWINANA\'])')
     section_role: typing.Optional[str] = Field(default=None, description='\'context\' if a single section label applies to all rows, \'grouping\' if multiple labels partition rows into groups')
@@ -88,9 +88,8 @@ class Resume(BaseModel):
     skills: typing.List[str]
 
 class TableTypeInference(BaseModel):
-    table_type: typing.Optional[types.TableType] = Field(default=None, description='The inferred table structure type')
-    rationale: typing.Optional[str] = Field(default=None, description='Brief explanation of why this table type was chosen, citing specific structural evidence')
-    confidence: typing.Optional[types.Confidence] = Field(default=None, description='How confident the inference is based on structural clarity')
+    table_type: typing.Optional[types.TableType] = Field(default=None, description='Table type from Step 1 (do not re-classify)')
+    mapping_strategy_used: typing.Optional[str] = Field(default=None, description='Which mapping strategy was applied: \'1:1 row mapping\', \'unpivot\', \'transpose\'')
 
 # #########################################################################
 # Generated type aliases (0)

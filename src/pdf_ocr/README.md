@@ -253,6 +253,51 @@ When a canonical column has **no matching source column** (especially when `alia
 
 When a value is inferred from context, it is applied to all rows in that section. The `description` field on `ColumnDef` is especially important for context-inferred columns — it tells the LLM where to look.
 
+### Designing a Canonical Schema
+
+A canonical schema should define **structure**, not business logic. Here are guidelines for effective schema design:
+
+#### Do
+
+- **Define what columns exist and their types** — this is the core purpose of a schema
+- **Use aliases to match source column variations** — e.g., `aliases=["Ship Name", "Vessel", "Vessel Name"]`
+- **Use description for structural guidance** — tell the LLM where to find the value (e.g., "may appear as a section header rather than a column")
+- **Use aliases to trigger unpivoting** — when your schema has columns whose aliases match parts of hierarchical/compound headers, the pipeline will automatically unpivot. For example, if headers are `"Battery Electric / December 2025"` and your schema has `car_motorization` with aliases `["battery electric", "plug-in hybrid"]` and `date` with aliases `["<month> <year>"]`, each source row produces multiple output records (one per motorization type × date combination)
+
+#### Don't
+
+- **Don't put filtering logic in descriptions** — "only the latest release" or "exclude totals" are business rules, not structural definitions. The LLM may interpret these inconsistently across batches. Filter downstream in Python/SQL instead.
+- **Don't put aggregation logic in descriptions** — "sum of all regions" belongs in post-processing, not extraction
+- **Don't rely on the LLM to deduplicate** — extract all matching data, dedupe downstream
+- **Don't mix row-filtering with column-mapping** — the schema defines which columns to extract; which rows to keep is a separate concern
+
+#### Example: Separating Structure from Filtering
+
+**Problematic** (mixing concerns):
+```python
+ColumnDef("registration_count", "int",
+          "Number of registrations — only include December 2025, exclude totals",
+          aliases=["Quantity"])
+```
+
+**Better** (structure only):
+```python
+ColumnDef("registration_count", "int",
+          "Number of registrations",
+          aliases=["Quantity"])
+```
+
+Then filter downstream:
+```python
+records = to_records(result)
+# Filter to latest period
+records = [r for r in records if r['date'] == '2025-12']
+# Exclude aggregation rows
+records = [r for r in records if r['car_motorization'] != 'Total']
+```
+
+This separation makes extraction reliable and filtering explicit/testable.
+
 ### Pipeline
 
 Two modes are available:
@@ -318,7 +363,7 @@ The pipeline recognises five structural patterns, each with a specific mapping s
 | Type | Description | Key Signs | Mapping Strategy |
 |---|---|---|---|
 | `FlatHeader` | Standard table: headers in top row(s), data in subsequent rows. Each column independent. | First column has different values per row (IDs, names). Header row count ≈ data row cell count. | 1:1 — each source row → one output record |
-| `HierarchicalHeader` | Tree-structured headers with parent cells spanning multiple children horizontally. | Header row has FEWER cells than data rows (parents span). Compound column names needed. | 1:1 — compound names (e.g., "Q1 / Revenue") matched against aliases |
+| `HierarchicalHeader` | Tree-structured headers with parent cells spanning multiple children horizontally. | Header row has FEWER cells than data rows (parents span). Compound column names needed. | **Context-dependent**: 1:1 if aliases match full compound names; **Unpivot** if aliases match parts of compound names (see below) |
 | `PivotedTable` | Cross-tabulation: categories as rows, time periods/attributes as columns, values in cells. | Column headers are dates/periods. First column has category labels. Cells are numeric values. | **Unpivot** — each row → N records (one per value column); column headers become field values |
 | `TransposedTable` | Property sheet: field NAMES as rows (left column), field VALUES as columns. Each column is one record. | First column contains field names (Name, Date, Status). Rows are heterogeneous (different types per row). | **Transpose** — each column → one record; each row → one field |
 | `Unknown` | Ambiguous structure | Cannot determine pattern | Best-effort based on content |
@@ -326,6 +371,14 @@ The pipeline recognises five structural patterns, each with a specific mapping s
 **Why table type matters for mapping**: The `AnalyzeAndParseTable` step classifies the table structure and includes this in the `ParsedTable` output. The `MapToCanonicalSchema` step then uses this classification to apply the correct transformation:
 
 - For **pivoted tables**, the model must understand that a single source row like `"Product A | 100 | 200"` with columns `"Category | Jan | Feb"` should produce **two** output records when the schema expects `(category, period, value)` — one for January, one for February. Without explicit guidance, models often try to find a "period" column that doesn't exist.
+
+- For **hierarchical headers with partial alias matches**, the same unpivoting logic applies. When canonical column aliases match *parts* of compound headers (not the full compound name), the model unpivots. For example:
+  - Headers: `"Battery Electric / December 2025"`, `"Plug-in Hybrid / December 2025"`, etc.
+  - Schema has `car_motorization` with aliases `["battery electric", "plug-in hybrid", ...]` (matches parent part)
+  - Schema has `date` with aliases `["<month> <year>"]` (matches child part)
+  - Result: Each country row produces multiple records — one per motorization type × date combination
+
+  This is common in statistical reports where dimensions (category, time period) are encoded in hierarchical column headers rather than as separate columns.
 
 - For **transposed tables**, the model inverts the usual row/column relationship — useful for property sheets where each row is a field name and each column is a different entity.
 
@@ -415,10 +468,9 @@ All interpretation functions accept `model` and `fallback_model` keyword argumen
 - **`mapping_notes`** — optional notes about ambiguous matches or type coercion issues.
 - **`metadata`** — an `InterpretationMetadata` object with:
   - **`model`** — the model that produced the result (e.g. `"openai/gpt-4o"`).
-  - **`table_type_inference`** — a `TableTypeInference` object explaining why the table structure was classified:
-    - `table_type` — the inferred type (`FlatHeader`, `HierarchicalHeader`, `PivotedTable`, `TransposedTable`, or `Unknown`)
-    - `rationale` — brief explanation citing structural evidence (e.g. "Single header row followed by uniform data rows")
-    - `confidence` — `High` (unambiguous structure), `Medium` (some irregularities), or `Low` (uncertain)
+  - **`table_type_inference`** — a `TableTypeInference` object with the table type and mapping strategy:
+    - `table_type` — the table type from Step 1 (`FlatHeader`, `HierarchicalHeader`, `PivotedTable`, `TransposedTable`, or `Unknown`). This is authoritative — Step 2 does not re-classify.
+    - `mapping_strategy_used` — which mapping strategy was applied (e.g. `"1:1 row mapping for FlatHeader"`, `"unpivot for PivotedTable"`)
   - **`field_mappings`** — one `FieldMapping` per canonical column, each containing:
     - `column_name` — the canonical column name
     - `source` — where the value came from (e.g. `"column: Ship Name"`, `"section header"`, `"document title"`)

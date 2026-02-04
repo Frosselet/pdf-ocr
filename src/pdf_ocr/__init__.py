@@ -1,6 +1,7 @@
 """pdf-ocr: Extract structured data from PDF documents."""
 
 from pdf_ocr.compress import compress_spatial_text
+from pdf_ocr.filter import FilterMatch, extract_table_titles, filter_pdf_by_table_titles
 from pdf_ocr.interpret import (
     CanonicalSchema,
     ColumnDef,
@@ -16,7 +17,10 @@ from pdf_ocr.spatial_text import pdf_to_spatial_text
 __all__ = [
     "CanonicalSchema",
     "ColumnDef",
+    "FilterMatch",
     "compress_spatial_text",
+    "extract_table_titles",
+    "filter_pdf_by_table_titles",
     "infer_table_schema_from_image",
     "interpret_table",
     "interpret_table_single_shot",

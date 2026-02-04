@@ -825,7 +825,7 @@ class TableTypeInferenceAst:
     def __init__(self, tb: type_builder.TypeBuilder):
         _tb = tb._tb # type: ignore (we know how to use this private attribute)
         self._bldr = _tb.class_("TableTypeInference")
-        self._properties: typing.Set[str] = set([  "table_type",  "rationale",  "confidence",  ])
+        self._properties: typing.Set[str] = set([  "table_type",  "mapping_strategy_used",  ])
         self._props = TableTypeInferenceProperties(self._bldr, self._properties)
 
     def type(self) -> baml_py.FieldType:
@@ -858,12 +858,8 @@ class TableTypeInferenceProperties:
         return type_builder.ClassPropertyViewer(self.__bldr.property("table_type"))
     
     @property
-    def rationale(self) -> type_builder.ClassPropertyViewer:
-        return type_builder.ClassPropertyViewer(self.__bldr.property("rationale"))
-    
-    @property
-    def confidence(self) -> type_builder.ClassPropertyViewer:
-        return type_builder.ClassPropertyViewer(self.__bldr.property("confidence"))
+    def mapping_strategy_used(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("mapping_strategy_used"))
     
     
 

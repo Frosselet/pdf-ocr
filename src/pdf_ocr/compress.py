@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 import fitz  # PyMuPDF
 
-from pdf_ocr.spatial_text import PageLayout, _extract_page_layout
+from pdf_ocr.spatial_text import PageLayout, _extract_page_layout, _open_pdf
 
 
 # ---------------------------------------------------------------------------
@@ -639,7 +640,7 @@ def _compress_page(
 # ---------------------------------------------------------------------------
 
 def compress_spatial_text(
-    pdf_path: str,
+    pdf_input: str | bytes | Path,
     *,
     pages: list[int] | None = None,
     cluster_threshold: float = 2.0,
@@ -654,7 +655,7 @@ def compress_spatial_text(
     and key-value pairs instead of whitespace-heavy spatial grids.
 
     Args:
-        pdf_path: Path to the PDF file.
+        pdf_input: Path to PDF file (str or Path), or raw PDF bytes.
         pages: Optional list of 0-based page indices to render.
             If None, all pages are rendered.
         cluster_threshold: Maximum y-distance (in points) to merge into
@@ -670,7 +671,7 @@ def compress_spatial_text(
     Returns:
         A single string with all compressed pages joined by *page_separator*.
     """
-    doc = fitz.open(pdf_path)
+    doc = _open_pdf(pdf_input)
     page_indices = pages if pages is not None else range(len(doc))
     rendered: list[str] = []
     for idx in page_indices:
@@ -681,4 +682,5 @@ def compress_spatial_text(
             merge_multi_row=merge_multi_row,
             min_table_rows=min_table_rows,
         ))
+    doc.close()
     return page_separator.join(rendered)

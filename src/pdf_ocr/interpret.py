@@ -37,12 +37,15 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from baml_client import types as baml_types
 from baml_client.sync_client import b as b_sync
 from baml_client.async_client import b as b_async
 from baml_client.type_builder import TypeBuilder
 from baml_py import Image
+
+from pdf_ocr.spatial_text import _open_pdf
 
 DEFAULT_MODEL = "openai/gpt-4o"
 
@@ -144,14 +147,14 @@ def _to_baml_schema(schema: CanonicalSchema) -> baml_types.CanonicalSchema:
 
 
 def _render_page_images(
-    pdf_path: str,
+    pdf_input: str | bytes | Path,
     pages: list[int] | None = None,
     dpi: int = 150,
 ) -> list[str]:
     """Render PDF pages to base64-encoded PNG strings.
 
     Args:
-        pdf_path: Path to the PDF file.
+        pdf_input: Path to PDF file (str or Path), or raw PDF bytes.
         pages: 0-based page indices. None = all pages.
         dpi: Resolution for rendering (default 150 — good balance of quality/size).
 
@@ -161,7 +164,7 @@ def _render_page_images(
     import base64
     import fitz
 
-    doc = fitz.open(pdf_path)
+    doc = _open_pdf(pdf_input)
     indices = pages if pages is not None else list(range(doc.page_count))
     images = []
     zoom = dpi / 72.0
@@ -475,6 +478,36 @@ def _create_batches(
     if sections is None:
         # Simple fixed-size chunking
         batches: list[_Batch] = []
+        for i in range(0, n, batch_size):
+            chunk = rows[i : i + batch_size]
+            batch_notes = _build_batch_notes(None, i, i + len(chunk), notes)
+            batches.append(
+                _Batch(
+                    page_index=page_index,
+                    batch_index=len(batches),
+                    data_rows=chunk,
+                    notes=batch_notes,
+                )
+            )
+        return batches
+
+    # Validate section coverage: if sections don't start near row 0 or don't cover
+    # most of the data, the LLM's section boundaries are probably wrong. Fall back
+    # to simple chunking to avoid losing rows.
+    first_start = sections[0][1]
+    last_end = sections[-1][2]
+    # Count how many rows the sections claim to cover
+    claimed_coverage = sum(end - start + 1 for _, start, end in sections)
+    # Sections are suspicious if they skip the beginning OR cover less than half the data
+    if first_start > batch_size // 2 or claimed_coverage < n // 2:
+        log.warning(
+            "Section boundaries look invalid (first_start=%d, coverage=%d/%d), "
+            "falling back to simple chunking",
+            first_start,
+            claimed_coverage,
+            n,
+        )
+        batches = []
         for i in range(0, n, batch_size):
             chunk = rows[i : i + batch_size]
             batch_notes = _build_batch_notes(None, i, i + len(chunk), notes)
@@ -802,6 +835,18 @@ async def _interpret_pages_batched_async(
                 actual,
             )
 
+    # Fix table_type in metadata: use the authoritative value from step 1 (ParsedTable)
+    # The LLM in step 2 sometimes re-classifies incorrectly, so we override it here.
+    for batch, mapped in zip(all_batches, mapped_tables):
+        parsed = parsed_tables[batch.page_index]
+        if mapped.metadata.table_type_inference.table_type != parsed.table_type:
+            log.debug(
+                "Fixing table_type metadata: step 2 said %s, step 1 said %s",
+                mapped.metadata.table_type_inference.table_type,
+                parsed.table_type,
+            )
+            mapped.metadata.table_type_inference.table_type = parsed.table_type
+
     # Group batch results by page
     page_numbers = [b.page_index + 1 for b in all_batches]  # 1-indexed
     return _group_by_page(list(mapped_tables), page_numbers)
@@ -902,7 +947,7 @@ def interpret_table(
     fallback_model: str | None = None,
     page_separator: str = "\f",
     batch_size: int = 20,
-    pdf_path: str | None = None,
+    pdf_path: str | bytes | Path | None = None,
     vision_model: str | None = None,
 ) -> dict[int, baml_types.MappedTable]:
     """Full 2-step pipeline: analyze+parse, then map to schema.
@@ -931,8 +976,9 @@ def interpret_table(
         fallback_model: If set, retry each step with this model on failure.
         page_separator: Delimiter between pages (default ``"\\f"``).
         batch_size: Maximum data rows per step-2 LLM call (default 20).
-        pdf_path: Path to the original PDF. When provided, enables vision-based
-            schema inference (step 0) and guided parsing (step 1).
+        pdf_path: Path to original PDF (str, Path, or bytes). When provided,
+            enables vision-based schema inference (step 0) and guided parsing
+            (step 1).
         vision_model: LLM to use for vision step 0. Defaults to *model*.
     """
     pages = _split_pages(compressed_text, page_separator)
@@ -940,7 +986,7 @@ def interpret_table(
     # Render page images when vision is enabled
     page_images: list[str] | None = None
     if pdf_path is not None:
-        log.info("Vision enabled: rendering %d page(s) from %s", len(pages), pdf_path)
+        log.info("Vision enabled: rendering %d page(s)", len(pages))
         page_images = _render_page_images(pdf_path, pages=list(range(len(pages))))
 
     if len(pages) == 1 and page_images is None:
@@ -963,6 +1009,9 @@ def interpret_table(
         if len(batches) == 1:
             # Fast path: single page, fits in one batch — sync, no event loop
             result = map_to_schema(parsed, schema, model=model, fallback_model=fallback_model)
+            # Fix table_type: use authoritative value from step 1
+            if result.metadata.table_type_inference.table_type != parsed.table_type:
+                result.metadata.table_type_inference.table_type = parsed.table_type
             return {1: result}
         # Single page but multiple batches — need async for concurrency
         return _run_async(
@@ -1196,7 +1245,11 @@ async def interpret_table_async(
         fallback_model: If set, retry each step with this model on failure.
     """
     parsed = await analyze_and_parse_async(compressed_text, model=model, fallback_model=fallback_model)
-    return await map_to_schema_async(parsed, schema, model=model, fallback_model=fallback_model)
+    result = await map_to_schema_async(parsed, schema, model=model, fallback_model=fallback_model)
+    # Fix table_type: use authoritative value from step 1
+    if result.metadata.table_type_inference.table_type != parsed.table_type:
+        result.metadata.table_type_inference.table_type = parsed.table_type
+    return result
 
 
 async def interpret_tables_async(
@@ -1230,4 +1283,8 @@ async def interpret_tables_async(
     mapped_tables = await asyncio.gather(
         *(map_to_schema_async(parsed, schema, model=model, fallback_model=fallback_model) for parsed in parsed_tables)
     )
+    # Fix table_type: use authoritative value from step 1
+    for parsed, mapped in zip(parsed_tables, mapped_tables):
+        if mapped.metadata.table_type_inference.table_type != parsed.table_type:
+            mapped.metadata.table_type_inference.table_type = parsed.table_type
     return list(mapped_tables)
