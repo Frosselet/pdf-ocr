@@ -355,6 +355,11 @@ function MapToCanonicalSchema(parsed_table: ParsedTable, schema: CanonicalSchema
     11. Populate metadata.table_type_inference with:
         - table_type: {{ parsed_table.table_type }} (use this exact value, do not re-classify)
         - mapping_strategy_used: Describe which strategy you applied (e.g., "1:1 row mapping for FlatHeader", "unpivot for PivotedTable")
+    12. EXTRACT ALL DATA — DO NOT FILTER: Schema descriptions are metadata about what the field
+        represents, NOT filtering instructions. Extract ALL data rows and ALL relevant columns
+        from the source table. If a table contains data for multiple time periods (e.g. 2024
+        and 2025), extract records for ALL periods. Never skip data because a description
+        mentions "latest", "current", "recent", etc. — the user will filter downstream if needed.
 
     Parsed table:
     {{ parsed_table }}
@@ -443,6 +448,11 @@ function InterpretTable(compressed_text: string, schema: CanonicalSchema, model_
     10. Populate metadata.table_type_inference with:
         - table_type: The table structure type you identified in step 1
         - mapping_strategy_used: Describe which strategy you applied (e.g., "1:1 row mapping for FlatHeader", "unpivot for PivotedTable")
+    11. EXTRACT ALL DATA — DO NOT FILTER: Schema descriptions are metadata about what the field
+        represents, NOT filtering instructions. Extract ALL data rows and ALL relevant columns
+        from the source table. If a table contains data for multiple time periods (e.g. 2024
+        and 2025), extract records for ALL periods. Never skip data because a description
+        mentions "latest", "current", "recent", etc. — the user will filter downstream if needed.
 
     Important:
     - Keep values faithful to the source; only reformat for type coercion.
