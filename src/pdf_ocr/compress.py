@@ -7,6 +7,8 @@ whitespace-heavy spatial grids.
 
 from __future__ import annotations
 
+import logging
+from bisect import bisect_right
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -14,6 +16,8 @@ from pathlib import Path
 import fitz  # PyMuPDF
 
 from pdf_ocr.spatial_text import PageLayout, _extract_page_layout, _open_pdf
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +39,87 @@ class Region:
     type: RegionType
     row_indices: list[int]
     rows: dict[int, list[tuple[int, str]]]  # subset of PageLayout.rows
+
+
+# ---------------------------------------------------------------------------
+# Span splitting — fix PDF-level merged cells
+# ---------------------------------------------------------------------------
+
+def _split_merged_spans(layout: PageLayout, min_gap: int = 5) -> PageLayout:
+    """Split text spans that contain multiple column values merged by the PDF.
+
+    Some PDFs encode adjacent cell values as a single text span (e.g.,
+    ``"7:00:00 PM BUNGE"`` where the time and exporter should be separate
+    cells). The spatial grid positions are correct, but a single span
+    occupies two logical columns.
+
+    Fix: collect column start positions from ALL rows (especially header
+    rows that have finer-grained spans). When a span's text extends past
+    a column boundary defined by *other* rows, split it at the character
+    position corresponding to that boundary.
+
+    ``min_gap`` prevents false splits on nearly-overlapping positions
+    (e.g., header col 33 vs data col 35 in the same logical column).
+    """
+    # Collect column starts and which rows own them.
+    col_to_rows: dict[int, set[int]] = {}
+    for ri, entries in layout.rows.items():
+        for col, _text in entries:
+            col_to_rows.setdefault(col, set()).add(ri)
+
+    sorted_positions = sorted(col_to_rows)
+    if len(sorted_positions) < 2:
+        return layout
+
+    changed = False
+    new_rows: dict[int, list[tuple[int, str]]] = {}
+
+    for ri, entries in layout.rows.items():
+        new_entries: list[tuple[int, str]] = []
+        for col, text in entries:
+            span_end = col + len(text)
+
+            # Find positions from OTHER rows that fall inside this span,
+            # beyond min_gap from the start.
+            lo = bisect_right(sorted_positions, col + min_gap)
+            splits: list[int] = []
+            for idx in range(lo, len(sorted_positions)):
+                pos = sorted_positions[idx]
+                if pos >= span_end:
+                    break
+                # Only split if this position is owned by a different row.
+                if ri not in col_to_rows[pos]:
+                    splits.append(pos)
+
+            if not splits:
+                new_entries.append((col, text))
+                continue
+
+            changed = True
+            current_start = 0
+            for split_col in splits:
+                split_idx = split_col - col
+                left = text[current_start:split_idx].rstrip()
+                if left:
+                    new_entries.append((col + current_start, left))
+                # Advance past whitespace after the split point.
+                next_start = split_idx
+                while next_start < len(text) and text[next_start] == " ":
+                    next_start += 1
+                current_start = next_start
+
+            remaining = text[current_start:].rstrip()
+            if remaining:
+                new_entries.append((col + current_start, remaining))
+
+        new_rows[ri] = new_entries
+
+    if not changed:
+        return layout
+
+    return PageLayout(
+        rows=new_rows, row_count=layout.row_count, cell_w=layout.cell_w
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +656,101 @@ def _render_scattered(region: Region) -> str:
 
 
 # ---------------------------------------------------------------------------
+# LLM-assisted helpers
+# ---------------------------------------------------------------------------
+
+def _render_spatial_excerpt(layout: PageLayout, row_indices: list[int]) -> str:
+    """Render specific rows from a PageLayout as monospace spatial text."""
+    lines: list[str] = []
+    for row_idx in row_indices:
+        if row_idx not in layout.rows:
+            lines.append("")
+            continue
+        entries = layout.rows[row_idx]
+        max_end = max(col + len(text) for col, text in entries)
+        buf = [" "] * max_end
+        for col, text in entries:
+            for i, ch in enumerate(text):
+                pos = col + i
+                if pos < len(buf):
+                    buf[pos] = ch
+        lines.append("".join(buf).rstrip())
+    return "\n".join(lines)
+
+
+def _render_detected_table_markdown(detected) -> str:
+    """Render a DetectedTable (from LLM fallback) as a markdown pipe table."""
+    if not detected.column_names:
+        return ""
+
+    num_cols = len(detected.column_names)
+    lines = [
+        "|" + "|".join(detected.column_names) + "|",
+        "|" + "|".join("---" for _ in detected.column_names) + "|",
+    ]
+
+    for row in detected.data_rows:
+        # Pad/truncate row to match column count.
+        cells = (list(row) + [""] * num_cols)[:num_cols]
+        lines.append("|" + "|".join(cells) + "|")
+
+    return "\n".join(lines)
+
+
+def _render_table_markdown_with_headers(
+    rows: list[list[tuple[int, str]]],
+    col_tolerance: int,
+    refined_headers,
+) -> str:
+    """Render table rows as a markdown pipe table using LLM-refined headers."""
+    if not rows:
+        return ""
+
+    canonical, col_map = _unify_columns(rows, col_tolerance)
+    num_cols = len(canonical)
+    grid = _rows_to_grid(rows, num_cols, col_map)
+
+    # Use LLM header names, pad/truncate to match column count.
+    header_cells = list(refined_headers.column_names)
+    header_cells = (header_cells + [""] * num_cols)[:num_cols]
+
+    lines = [
+        "|" + "|".join(header_cells) + "|",
+        "|" + "|".join("---" for _ in header_cells) + "|",
+    ]
+
+    # Skip header rows from data.
+    skip = refined_headers.header_row_count
+    for cells in grid[skip:]:
+        lines.append("|" + "|".join(cells) + "|")
+
+    return "\n".join(lines)
+
+
+def _refine_headers_with_llm(spatial_excerpt: str, data_column_count: int):
+    """Call LLM to refine table headers. Returns RefinedHeaders or None on failure."""
+    try:
+        from baml_client.sync_client import b as b_sync
+        return b_sync.RefineTableHeaders(spatial_excerpt, data_column_count)
+    except Exception:
+        logger.debug("LLM header refinement failed, falling back to heuristic", exc_info=True)
+        return None
+
+
+def _detect_table_with_llm(spatial_text: str):
+    """Call LLM to detect a table on a page. Returns DetectedTable or None."""
+    try:
+        from baml_client.sync_client import b as b_sync
+        result = b_sync.DetectAndStructureTable(spatial_text)
+        if result.column_names:
+            return result
+        return None
+    except Exception:
+        logger.debug("LLM table detection failed, falling back to heuristic", exc_info=True)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Page compression
 # ---------------------------------------------------------------------------
 
@@ -580,11 +760,15 @@ def _compress_page(
     table_format: str = "markdown",
     merge_multi_row: bool = True,
     min_table_rows: int = 3,
+    refine_headers: bool = True,
 ) -> str:
     """Compress a single PDF page into structured text."""
     layout = _extract_page_layout(page, cluster_threshold)
     if layout is None:
         return ""
+
+    # Split spans that the PDF merged across column boundaries.
+    layout = _split_merged_spans(layout)
 
     col_tolerance = 3
     regions = _classify_regions(layout, min_table_rows, col_tolerance)
@@ -592,33 +776,99 @@ def _compress_page(
     if not regions:
         return ""
 
+    has_tables = any(r.type == RegionType.TABLE for r in regions)
+
+    # === FALLBACK: no tables detected, ask the LLM ===
+    if not has_tables and refine_headers:
+        from pdf_ocr.spatial_text import _render_page_grid
+        spatial = _render_page_grid(page, cluster_threshold)
+        detected = _detect_table_with_llm(spatial)
+        if detected and detected.column_names:
+            table_md = _render_detected_table_markdown(detected)
+            # Render non-table regions normally, then append LLM table.
+            rendered_parts: list[str] = []
+            for region in regions:
+                if region.type == RegionType.TEXT:
+                    rendered_parts.append(_render_text(region))
+                elif region.type == RegionType.HEADING:
+                    rendered_parts.append(_render_heading(region))
+                elif region.type == RegionType.KV_PAIRS:
+                    rendered_parts.append(_render_kv_pairs(region))
+                elif region.type == RegionType.SCATTERED:
+                    rendered_parts.append(_render_scattered(region))
+            rendered_parts.append(table_md)
+            return "\n\n".join(rendered_parts)
+
+    # === NORMAL PATH: render each region ===
     rendered_parts: list[str] = []
 
     for region in regions:
         if region.type == RegionType.TABLE:
             table_rows = [sorted(region.rows[ri]) for ri in region.row_indices]
-
-            if merge_multi_row:
-                span_counts = {ri: len(region.rows[ri]) for ri in region.row_indices}
-                result = _detect_multi_row_period(region, span_counts)
-                if result is not None:
-                    header_rows, period = result
-                    if period > 1:
-                        table_rows = _merge_multi_row_records(
-                            region, header_rows, period
-                        )
-
             # Use wider tolerance for column unification in rendering.
-            # Detection tolerance (col_tolerance) is tight for identifying
-            # table runs, but columns within a table can vary by more due
-            # to variable-width text alignment within cells.
-            render_tolerance = max(col_tolerance, round(20.0 / layout.cell_w))
-            if table_format == "tsv":
-                rendered_parts.append(_render_table_tsv(table_rows, render_tolerance))
+            render_tolerance = max(col_tolerance, round(10.0 / layout.cell_w))
+
+            if refine_headers and table_format == "markdown":
+                # 1. Get column count from heuristic.
+                canonical, col_map = _unify_columns(table_rows, render_tolerance)
+                num_cols = len(canonical)
+
+                # 2. Get spatial text of this table region.
+                spatial_excerpt = _render_spatial_excerpt(layout, region.row_indices)
+
+                # 3. LLM refines headers.
+                refined = _refine_headers_with_llm(spatial_excerpt, num_cols)
+
+                if refined is not None:
+                    # 4. Multi-row merge (using LLM's header_row_count).
+                    if merge_multi_row:
+                        span_counts = {ri: len(region.rows[ri]) for ri in region.row_indices}
+                        result = _detect_multi_row_period(region, span_counts)
+                        if result is not None:
+                            _hdr, period = result
+                            if period > 1:
+                                table_rows = _merge_multi_row_records(
+                                    region, refined.header_row_count, period
+                                )
+
+                    # 5. Render with LLM headers.
+                    rendered_parts.append(
+                        _render_table_markdown_with_headers(
+                            table_rows, render_tolerance, refined
+                        )
+                    )
+                else:
+                    # LLM failed — fall back to heuristic rendering.
+                    if merge_multi_row:
+                        span_counts = {ri: len(region.rows[ri]) for ri in region.row_indices}
+                        result = _detect_multi_row_period(region, span_counts)
+                        if result is not None:
+                            header_rows, period = result
+                            if period > 1:
+                                table_rows = _merge_multi_row_records(
+                                    region, header_rows, period
+                                )
+                    rendered_parts.append(
+                        _render_table_markdown(table_rows, render_tolerance)
+                    )
             else:
-                rendered_parts.append(
-                    _render_table_markdown(table_rows, render_tolerance)
-                )
+                # Original path (no LLM or TSV format).
+                if merge_multi_row:
+                    span_counts = {ri: len(region.rows[ri]) for ri in region.row_indices}
+                    result = _detect_multi_row_period(region, span_counts)
+                    if result is not None:
+                        header_rows, period = result
+                        if period > 1:
+                            table_rows = _merge_multi_row_records(
+                                region, header_rows, period
+                            )
+
+                if table_format == "tsv":
+                    rendered_parts.append(_render_table_tsv(table_rows, render_tolerance))
+                else:
+                    rendered_parts.append(
+                        _render_table_markdown(table_rows, render_tolerance)
+                    )
 
         elif region.type == RegionType.TEXT:
             rendered_parts.append(_render_text(region))
@@ -642,6 +892,7 @@ def _compress_page(
 def compress_spatial_text(
     pdf_input: str | bytes | Path,
     *,
+    refine_headers: bool = True,
     pages: list[int] | None = None,
     cluster_threshold: float = 2.0,
     page_separator: str = "\f",
@@ -656,6 +907,8 @@ def compress_spatial_text(
 
     Args:
         pdf_input: Path to PDF file (str or Path), or raw PDF bytes.
+        refine_headers: If True, use an LLM (GPT-4o-mini) to refine table
+            headers and detect tables missed by heuristics. Default True.
         pages: Optional list of 0-based page indices to render.
             If None, all pages are rendered.
         cluster_threshold: Maximum y-distance (in points) to merge into
@@ -681,6 +934,7 @@ def compress_spatial_text(
             table_format=table_format,
             merge_multi_row=merge_multi_row,
             min_table_rows=min_table_rows,
+            refine_headers=refine_headers,
         ))
     doc.close()
     return page_separator.join(rendered)

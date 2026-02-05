@@ -25,6 +25,9 @@ type_map = {
     "types.ColumnDef": types.ColumnDef,
     "stream_types.ColumnDef": stream_types.ColumnDef,
 
+    "types.DetectedTable": types.DetectedTable,
+    "stream_types.DetectedTable": stream_types.DetectedTable,
+
     "types.FieldMapping": types.FieldMapping,
     "stream_types.FieldMapping": stream_types.FieldMapping,
 
@@ -45,6 +48,9 @@ type_map = {
 
     "types.ParsedTable": types.ParsedTable,
     "stream_types.ParsedTable": stream_types.ParsedTable,
+
+    "types.RefinedHeaders": types.RefinedHeaders,
+    "stream_types.RefinedHeaders": stream_types.RefinedHeaders,
 
     "types.Resume": types.Resume,
     "stream_types.Resume": stream_types.Resume,

@@ -62,7 +62,7 @@ class TableType(str, Enum):
     Unknown = "Unknown"
 
 # #########################################################################
-# Generated classes (12)
+# Generated classes (14)
 # #########################################################################
 
 class AggregationInfo(BaseModel):
@@ -80,6 +80,11 @@ class ColumnDef(BaseModel):
     description: str = Field(description='What this column represents')
     aliases: typing.List[str] = Field(description='Alternative names this column may appear as in source tables')
     format: typing.Optional[str] = Field(default=None, description='Output format specification. For dates: YYYY-MM-DD, YYYY-MM, HH:mm:ss, etc. For numbers: #,###.## (thousands + decimals), +# (explicit sign), #% (percentage). For strings: uppercase, lowercase, titlecase, camelCase, PascalCase, snake_case, kebab-case, trim.')
+
+class DetectedTable(BaseModel):
+    column_names: typing.List[str] = Field(description='Column headers, one per data column')
+    data_rows: typing.List[typing.List[str]] = Field(description='Data rows excluding headers and aggregation/total rows. Each inner array has one cell value per column. Keep values as strings exactly as they appear. Use empty string for empty cells.')
+    notes: typing.Optional[str] = Field(default=None, description='Observations: sections found, aggregation rows excluded, etc.')
 
 class FieldMapping(BaseModel):
     column_name: str = Field(description='Canonical column name from the schema')
@@ -120,6 +125,11 @@ class ParsedTable(BaseModel):
     aggregations: typing.Optional["AggregationInfo"] = Field(default=None, description='Present only if the table contains aggregation rows/columns')
     data_rows: typing.List[typing.List[str]] = Field(description='All data rows (excluding headers and aggregation rows). Each inner array is one row of cell values as strings.')
     notes: typing.Optional[str] = Field(default=None, description='Any caveats or observations about the table structure')
+
+class RefinedHeaders(BaseModel):
+    header_row_count: int = Field(description='Number of rows at the top that are headers (not data). Count all rows containing column labels, units, or grouping text.')
+    column_names: typing.List[str] = Field(description='Clean column names, one per data column. Combine multiline/stacked text into single names. For hierarchical spanning headers, use \'Parent / Child\' paths.')
+    notes: typing.Optional[str] = Field(default=None, description='Observations: merged cells, stacked labels, spanning parents, missing headers, etc.')
 
 class Resume(BaseModel):
     name: str

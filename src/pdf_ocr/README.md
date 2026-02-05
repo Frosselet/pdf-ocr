@@ -120,17 +120,38 @@ The spatial grid preserves layout perfectly but wastes tokens on whitespace padd
 PageLayout (shared with spatial renderer)
   │
   ▼
-1. Region detection ──► classify row groups as table / text / heading / kv_pairs / scattered
+1. Span splitting ──► split merged PDF spans using column boundaries from other rows
   │
   ▼
-2. Multi-row merge ──► detect repeating row patterns (e.g., 3-row shipping records) and collapse
+2. Region detection ──► classify row groups as table / text / heading / kv_pairs / scattered
   │
   ▼
-3. Region rendering ──► markdown tables, flowing paragraphs, key: value lines
+3. LLM table fallback ──► if no tables detected and refine_headers=True, ask GPT-4o-mini to find tables
   │
   ▼
-4. Assembly ──► join regions with blank lines, pages with separator
+4. LLM header refinement ──► for each detected table (refine_headers=True), refine headers via GPT-4o-mini
+  │
+  ▼
+5. Multi-row merge ──► detect repeating row patterns (e.g., 3-row shipping records) and collapse
+  │
+  ▼
+6. Region rendering ──► markdown tables (with LLM-refined headers when available), flowing paragraphs, key: value lines
+  │
+  ▼
+7. Assembly ──► join regions with blank lines, pages with separator
 ```
+
+### Span Splitting
+
+PDF creators sometimes encode adjacent cell values as a single text span. For example, a loading statement might store `"7:00:00 PM BUNGE"` as one span covering both the time and exporter columns, or `"33020 WHEAT"` merging a numeric code with a commodity name. The spatial grid renders these faithfully, but the compressor would treat each merged span as a single table cell — breaking pipe table structure.
+
+`_split_merged_spans()` fixes this by using column boundaries observed across **all rows** to split merged spans:
+
+1. **Collect column positions** from every row in the `PageLayout` — each `(col, text)` entry registers its `col` as a known boundary.
+2. **For each span**, find positions from *other* rows that fall inside it (with a minimum gap of 5 characters to avoid false splits on narrow columns).
+3. **Split at those boundaries** using character-position math: if header rows have separate spans at columns 219 (`EXPORTER`) and 245 (`COMMODITY`), a data span starting at column 208 that covers both positions is split into `"7:00:00 PM"` (col 208) + `"BUNGE"` (col 219).
+
+This approach generalises to any layout — it doesn't need to know which rows are headers. Any row that has finer-grained column boundaries than another provides the split points. The result is a corrected `PageLayout` where each span contains exactly one cell value, enabling clean pipe table rendering downstream.
 
 ### Region Detection
 
@@ -160,6 +181,22 @@ Row 3: times       →  11:45 AM   2:25 PM   8:06 AM   8:06 AM   11:15 PM
 
 The compressor detects repeating span-count patterns (here `[5, 7, 5]`) and merges sub-rows, producing cells like `10/07/2025 11:45 AM`. A header offset search skips irregular header rows before finding the repeating body pattern.
 
+### LLM Header Refinement
+
+When `refine_headers=True` (the default), a lightweight LLM (GPT-4o-mini) improves compress output in two ways:
+
+**Always-on header refinement** — For every heuristic-detected table, the spatial text excerpt of the table region is sent to GPT-4o-mini along with the data column count. The LLM returns:
+- Clean column names (combining multiline/stacked headers, using `"Parent / Child"` paths for hierarchical spanning headers)
+- The number of header rows to skip from the data grid
+
+This replaces the naive "first grid row = header" approach that fails on stacked headers, hierarchical layouts, and other complex structures.
+
+**Table detection fallback** — When heuristics find no table on a page (e.g., the layout doesn't meet the strict 2+ spans / 2+ shared anchors / 3+ rows requirements), the full page spatial text is sent to GPT-4o-mini for table detection. If a table is found, it's rendered as a pipe table and inserted into the output alongside heuristic-rendered non-table regions.
+
+Both LLM calls use `CustomGPT4oMini` defined in `baml_src/compress.baml`. Failures are handled gracefully — any LLM error (network, missing API key, timeout, malformed response) silently falls back to heuristic output. The `refine_headers=True` path is never worse than `refine_headers=False`.
+
+Setting `refine_headers=False` gives identical behavior to the pure-heuristic path: no LLM calls, no API key needed.
+
 ### API
 
 ```python
@@ -172,6 +209,7 @@ text = compress_spatial_text("document.pdf")
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
+| `refine_headers` | `bool` | `True` | Use GPT-4o-mini to refine table headers and detect tables missed by heuristics |
 | `pdf_path` | `str` | required | Path to the PDF file |
 | `pages` | `list[int] \| None` | `None` | 0-based page indices; `None` = all |
 | `cluster_threshold` | `float` | `2.0` | Max y-distance (points) to merge into one row |

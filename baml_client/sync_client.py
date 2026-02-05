@@ -122,6 +122,20 @@ class BamlSyncClient:
                 "compressed_text": compressed_text,"visual_schema": visual_schema,
             })
             return typing.cast(types.ParsedTable, __result__.cast_to(types, types, stream_types, False, __runtime__))
+    def DetectAndStructureTable(self, spatial_text: str,
+        baml_options: BamlCallOptions = {},
+    ) -> types.DetectedTable:
+        # Check if on_tick is provided
+        if 'on_tick' in baml_options:
+            __stream__ = self.stream.DetectAndStructureTable(spatial_text=spatial_text,
+                baml_options=baml_options)
+            return __stream__.get_final_response()
+        else:
+            # Original non-streaming code
+            __result__ = self.__options.merge_options(baml_options).call_function_sync(function_name="DetectAndStructureTable", args={
+                "spatial_text": spatial_text,
+            })
+            return typing.cast(types.DetectedTable, __result__.cast_to(types, types, stream_types, False, __runtime__))
     def ExtractResume(self, resume: str,
         baml_options: BamlCallOptions = {},
     ) -> types.Resume:
@@ -178,6 +192,20 @@ class BamlSyncClient:
                 "parsed_table": parsed_table,"schema": schema,"model_name": model_name,
             })
             return typing.cast(types.MappedTable, __result__.cast_to(types, types, stream_types, False, __runtime__))
+    def RefineTableHeaders(self, spatial_excerpt: str,data_column_count: int,
+        baml_options: BamlCallOptions = {},
+    ) -> types.RefinedHeaders:
+        # Check if on_tick is provided
+        if 'on_tick' in baml_options:
+            __stream__ = self.stream.RefineTableHeaders(spatial_excerpt=spatial_excerpt,data_column_count=data_column_count,
+                baml_options=baml_options)
+            return __stream__.get_final_response()
+        else:
+            # Original non-streaming code
+            __result__ = self.__options.merge_options(baml_options).call_function_sync(function_name="RefineTableHeaders", args={
+                "spatial_excerpt": spatial_excerpt,"data_column_count": data_column_count,
+            })
+            return typing.cast(types.RefinedHeaders, __result__.cast_to(types, types, stream_types, False, __runtime__))
     
 
 
@@ -209,6 +237,18 @@ class BamlStreamClient:
           __result__,
           lambda x: typing.cast(stream_types.ParsedTable, x.cast_to(types, types, stream_types, True, __runtime__)),
           lambda x: typing.cast(types.ParsedTable, x.cast_to(types, types, stream_types, False, __runtime__)),
+          __ctx__,
+        )
+    def DetectAndStructureTable(self, spatial_text: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.BamlSyncStream[stream_types.DetectedTable, types.DetectedTable]:
+        __ctx__, __result__ = self.__options.merge_options(baml_options).create_sync_stream(function_name="DetectAndStructureTable", args={
+            "spatial_text": spatial_text,
+        })
+        return baml_py.BamlSyncStream[stream_types.DetectedTable, types.DetectedTable](
+          __result__,
+          lambda x: typing.cast(stream_types.DetectedTable, x.cast_to(types, types, stream_types, True, __runtime__)),
+          lambda x: typing.cast(types.DetectedTable, x.cast_to(types, types, stream_types, False, __runtime__)),
           __ctx__,
         )
     def ExtractResume(self, resume: str,
@@ -259,6 +299,18 @@ class BamlStreamClient:
           lambda x: typing.cast(types.MappedTable, x.cast_to(types, types, stream_types, False, __runtime__)),
           __ctx__,
         )
+    def RefineTableHeaders(self, spatial_excerpt: str,data_column_count: int,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.BamlSyncStream[stream_types.RefinedHeaders, types.RefinedHeaders]:
+        __ctx__, __result__ = self.__options.merge_options(baml_options).create_sync_stream(function_name="RefineTableHeaders", args={
+            "spatial_excerpt": spatial_excerpt,"data_column_count": data_column_count,
+        })
+        return baml_py.BamlSyncStream[stream_types.RefinedHeaders, types.RefinedHeaders](
+          __result__,
+          lambda x: typing.cast(stream_types.RefinedHeaders, x.cast_to(types, types, stream_types, True, __runtime__)),
+          lambda x: typing.cast(types.RefinedHeaders, x.cast_to(types, types, stream_types, False, __runtime__)),
+          __ctx__,
+        )
     
 
 class BamlHttpRequestClient:
@@ -279,6 +331,13 @@ class BamlHttpRequestClient:
     ) -> baml_py.baml_py.HTTPRequest:
         __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="AnalyzeAndParseTableGuided", args={
             "compressed_text": compressed_text,"visual_schema": visual_schema,
+        }, mode="request")
+        return __result__
+    def DetectAndStructureTable(self, spatial_text: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="DetectAndStructureTable", args={
+            "spatial_text": spatial_text,
         }, mode="request")
         return __result__
     def ExtractResume(self, resume: str,
@@ -307,6 +366,13 @@ class BamlHttpRequestClient:
     ) -> baml_py.baml_py.HTTPRequest:
         __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="MapToCanonicalSchema", args={
             "parsed_table": parsed_table,"schema": schema,"model_name": model_name,
+        }, mode="request")
+        return __result__
+    def RefineTableHeaders(self, spatial_excerpt: str,data_column_count: int,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="RefineTableHeaders", args={
+            "spatial_excerpt": spatial_excerpt,"data_column_count": data_column_count,
         }, mode="request")
         return __result__
     
@@ -331,6 +397,13 @@ class BamlHttpStreamRequestClient:
             "compressed_text": compressed_text,"visual_schema": visual_schema,
         }, mode="stream")
         return __result__
+    def DetectAndStructureTable(self, spatial_text: str,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="DetectAndStructureTable", args={
+            "spatial_text": spatial_text,
+        }, mode="stream")
+        return __result__
     def ExtractResume(self, resume: str,
         baml_options: BamlCallOptions = {},
     ) -> baml_py.baml_py.HTTPRequest:
@@ -357,6 +430,13 @@ class BamlHttpStreamRequestClient:
     ) -> baml_py.baml_py.HTTPRequest:
         __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="MapToCanonicalSchema", args={
             "parsed_table": parsed_table,"schema": schema,"model_name": model_name,
+        }, mode="stream")
+        return __result__
+    def RefineTableHeaders(self, spatial_excerpt: str,data_column_count: int,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="RefineTableHeaders", args={
+            "spatial_excerpt": spatial_excerpt,"data_column_count": data_column_count,
         }, mode="stream")
         return __result__
     

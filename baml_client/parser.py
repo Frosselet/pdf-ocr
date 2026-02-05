@@ -36,6 +36,12 @@ class LlmResponseParser:
         __result__ = self.__options.merge_options(baml_options).parse_response(function_name="AnalyzeAndParseTableGuided", llm_response=llm_response, mode="request")
         return typing.cast(types.ParsedTable, __result__)
 
+    def DetectAndStructureTable(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> types.DetectedTable:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="DetectAndStructureTable", llm_response=llm_response, mode="request")
+        return typing.cast(types.DetectedTable, __result__)
+
     def ExtractResume(
         self, llm_response: str, baml_options: BamlCallOptions = {},
     ) -> types.Resume:
@@ -60,6 +66,12 @@ class LlmResponseParser:
         __result__ = self.__options.merge_options(baml_options).parse_response(function_name="MapToCanonicalSchema", llm_response=llm_response, mode="request")
         return typing.cast(types.MappedTable, __result__)
 
+    def RefineTableHeaders(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> types.RefinedHeaders:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="RefineTableHeaders", llm_response=llm_response, mode="request")
+        return typing.cast(types.RefinedHeaders, __result__)
+
     
 
 class LlmStreamParser:
@@ -79,6 +91,12 @@ class LlmStreamParser:
     ) -> stream_types.ParsedTable:
         __result__ = self.__options.merge_options(baml_options).parse_response(function_name="AnalyzeAndParseTableGuided", llm_response=llm_response, mode="stream")
         return typing.cast(stream_types.ParsedTable, __result__)
+
+    def DetectAndStructureTable(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> stream_types.DetectedTable:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="DetectAndStructureTable", llm_response=llm_response, mode="stream")
+        return typing.cast(stream_types.DetectedTable, __result__)
 
     def ExtractResume(
         self, llm_response: str, baml_options: BamlCallOptions = {},
@@ -103,5 +121,11 @@ class LlmStreamParser:
     ) -> stream_types.MappedTable:
         __result__ = self.__options.merge_options(baml_options).parse_response(function_name="MapToCanonicalSchema", llm_response=llm_response, mode="stream")
         return typing.cast(stream_types.MappedTable, __result__)
+
+    def RefineTableHeaders(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> stream_types.RefinedHeaders:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="RefineTableHeaders", llm_response=llm_response, mode="stream")
+        return typing.cast(stream_types.RefinedHeaders, __result__)
 
     
