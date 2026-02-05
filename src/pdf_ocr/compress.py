@@ -958,6 +958,31 @@ def _compress_page(
         if region.type == RegionType.TABLE:
             all_table_rows.update(region.row_indices)
 
+    # Pre-compute preceding header rows for all table regions so they
+    # can be suppressed from non-table region rendering.
+    preceding_header_rows: set[int] = set()
+    if refine_headers and table_format == "markdown":
+        render_tol = max(col_tolerance, round(10.0 / layout.cell_w))
+        for region in regions:
+            if region.type != RegionType.TABLE:
+                continue
+            trows = [sorted(region.rows[ri]) for ri in region.row_indices]
+            hc = None
+            if merge_multi_row:
+                sc = {ri: len(region.rows[ri]) for ri in region.row_indices}
+                mr = _detect_multi_row_period(region, sc)
+                if mr is not None:
+                    hc = mr[0]
+            if hc is None:
+                hc = _estimate_header_rows(trows)
+            data_rows = trows[hc:]
+            if data_rows:
+                can, _ = _unify_columns(data_rows, render_tol)
+                preceding_header_rows.update(_find_preceding_header_rows(
+                    layout, region.row_indices[0], can,
+                    render_tol, all_table_rows,
+                ))
+
     for region in regions:
         if region.type == RegionType.TABLE:
             table_rows = [sorted(region.rows[ri]) for ri in region.row_indices]
@@ -1044,17 +1069,27 @@ def _compress_page(
                         _render_table_markdown(table_rows, render_tolerance)
                     )
 
-        elif region.type == RegionType.TEXT:
-            rendered_parts.append(_render_text(region))
+        else:
+            # Filter out rows consumed as preceding table headers.
+            if preceding_header_rows:
+                filtered = [ri for ri in region.row_indices
+                            if ri not in preceding_header_rows]
+                if not filtered:
+                    continue
+                region = Region(
+                    type=region.type,
+                    row_indices=filtered,
+                    rows={ri: region.rows[ri] for ri in filtered},
+                )
 
-        elif region.type == RegionType.HEADING:
-            rendered_parts.append(_render_heading(region))
-
-        elif region.type == RegionType.KV_PAIRS:
-            rendered_parts.append(_render_kv_pairs(region))
-
-        elif region.type == RegionType.SCATTERED:
-            rendered_parts.append(_render_scattered(region))
+            if region.type == RegionType.TEXT:
+                rendered_parts.append(_render_text(region))
+            elif region.type == RegionType.HEADING:
+                rendered_parts.append(_render_heading(region))
+            elif region.type == RegionType.KV_PAIRS:
+                rendered_parts.append(_render_kv_pairs(region))
+            elif region.type == RegionType.SCATTERED:
+                rendered_parts.append(_render_scattered(region))
 
     return "\n\n".join(rendered_parts)
 
