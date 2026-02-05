@@ -361,7 +361,7 @@ class ColumnDefAst:
     def __init__(self, tb: type_builder.TypeBuilder):
         _tb = tb._tb # type: ignore (we know how to use this private attribute)
         self._bldr = _tb.class_("ColumnDef")
-        self._properties: typing.Set[str] = set([  "name",  "type",  "description",  "aliases",  ])
+        self._properties: typing.Set[str] = set([  "name",  "type",  "description",  "aliases",  "format",  ])
         self._props = ColumnDefProperties(self._bldr, self._properties)
 
     def type(self) -> baml_py.FieldType:
@@ -404,6 +404,10 @@ class ColumnDefProperties:
     @property
     def aliases(self) -> type_builder.ClassPropertyViewer:
         return type_builder.ClassPropertyViewer(self.__bldr.property("aliases"))
+    
+    @property
+    def format(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("format"))
     
     
 

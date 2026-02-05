@@ -40,6 +40,7 @@ class ColumnDef(BaseModel):
     type: typing.Optional[str] = Field(default=None, description='Expected type: string, int, float, bool, date')
     description: typing.Optional[str] = Field(default=None, description='What this column represents')
     aliases: typing.List[str] = Field(description='Alternative names this column may appear as in source tables')
+    format: typing.Optional[str] = Field(default=None, description='Output format specification. For dates: YYYY-MM-DD, YYYY-MM, HH:mm:ss, etc. For numbers: #,###.## (thousands + decimals), +# (explicit sign), #% (percentage). For strings: uppercase, lowercase, titlecase, camelCase, PascalCase, snake_case, kebab-case, trim.')
 
 class FieldMapping(BaseModel):
     column_name: typing.Optional[str] = Field(default=None, description='Canonical column name from the schema')
@@ -52,7 +53,7 @@ class HeaderInfo(BaseModel):
     names: typing.List[typing.List[str]] = Field(description='Header names per level, outer = level, inner = columns. For FlatHeader (even with multiline labels), use a single level with combined names. For HierarchicalHeader, each level represents a tier in the tree.')
 
 class InferredTableSchema(BaseModel):
-    column_names: typing.List[str] = Field(description='Column headers as they visually appear in the table, left to right. For stacked/multiline headers, combine the vertically stacked labels into a single name per column (e.g. \'Unique Slot Reference Number\'). For hierarchical headers with spanning parents, use compound paths (e.g. \'Q1 2025 / Revenue\').')
+    column_names: typing.List[str] = Field(description='Column headers as they visually appear in the table, left to right. For stacked/multiline headers, combine the vertically stacked labels into a single name per column (e.g. \'Unique Slot Reference Number\'). For hierarchical headers with spanning parents, use compound paths (e.g. \'Group A / Metric 1\').')
     column_count: typing.Optional[int] = Field(default=None, description='Total number of data columns')
     header_levels: typing.Optional[int] = Field(default=None, description='Number of header rows (1 for single-row, >1 for stacked/multiline or hierarchical)')
     has_spanning_headers: typing.Optional[bool] = Field(default=None, description='True if parent cells span multiple child columns (hierarchical). False if headers are just stacked text with no spanning (multiline flat).')

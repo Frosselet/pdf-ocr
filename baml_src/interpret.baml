@@ -5,7 +5,7 @@
 
 enum TableType {
   FlatHeader @description("Standard table: headers in top row(s), data in subsequent rows. Each column is independent (no spanning parent cells). Header text may wrap across multiple rows vertically but each column stands alone. 1:1 row-to-record mapping. Key sign: first column contains different values per row (IDs, names, categories).")
-  HierarchicalHeader @description("Tree-structured headers where parent cells span horizontally across multiple child columns (e.g. 'Q1 2025' spanning 'Revenue' and 'Costs'). Column names become compound paths (e.g. 'Q1 2025 / Revenue'). 1:1 row-to-record mapping. Key sign: header row has FEWER cells than data rows because parents span multiple children. Note: stacked/multiline headers with no horizontal spanning are FlatHeader, not this.")
+  HierarchicalHeader @description("Tree-structured headers where parent cells span horizontally across multiple child columns (e.g. 'Group A' spanning 'Metric 1' and 'Metric 2'). Column names become compound paths (e.g. 'Group A / Metric 1'). 1:1 row-to-record mapping. Key sign: header row has FEWER cells than data rows because parents span multiple children. Note: stacked/multiline headers with no horizontal spanning are FlatHeader, not this.")
   PivotedTable @description("Cross-tabulation: row labels are categories, column headers are time periods or attributes, cells are values. Requires unpivoting: each source row produces multiple output records (one per value column). Key sign: column headers are dates, periods, or repeated attribute names; first column contains category labels; cells contain numeric values.")
   TransposedTable @description("Property sheet layout: field NAMES as rows (left column), field VALUES as columns. Each column (after the label column) represents a complete record. Requires transposition: each column becomes one output record, each row provides one field. Key signs: (1) first column contains field names like 'Name', 'Date', 'Status', 'Total'; (2) subsequent columns contain the corresponding values; (3) rows are heterogeneous (mix of dates, numbers, text) because each row is a different field type.")
   Unknown @description("Ambiguous structure — use best judgment based on content")
@@ -55,6 +55,7 @@ class ColumnDef {
   type string @description("Expected type: string, int, float, bool, date")
   description string @description("What this column represents")
   aliases string[] @description("Alternative names this column may appear as in source tables")
+  format string? @description("Output format specification. For dates: YYYY-MM-DD, YYYY-MM, HH:mm:ss, etc. For numbers: #,###.## (thousands + decimals), +# (explicit sign), #% (percentage). For strings: uppercase, lowercase, titlecase, camelCase, PascalCase, snake_case, kebab-case, trim.")
 }
 
 class CanonicalSchema {
@@ -96,7 +97,7 @@ class MappedTable {
 // ─── Vision-based schema inference ──────────────────────────────────────────
 
 class InferredTableSchema {
-  column_names string[] @description("Column headers as they visually appear in the table, left to right. For stacked/multiline headers, combine the vertically stacked labels into a single name per column (e.g. 'Unique Slot Reference Number'). For hierarchical headers with spanning parents, use compound paths (e.g. 'Q1 2025 / Revenue').")
+  column_names string[] @description("Column headers as they visually appear in the table, left to right. For stacked/multiline headers, combine the vertically stacked labels into a single name per column (e.g. 'Unique Slot Reference Number'). For hierarchical headers with spanning parents, use compound paths (e.g. 'Group A / Metric 1').")
   column_count int @description("Total number of data columns")
   header_levels int @description("Number of header rows (1 for single-row, >1 for stacked/multiline or hierarchical)")
   has_spanning_headers bool @description("True if parent cells span multiple child columns (hierarchical). False if headers are just stacked text with no spanning (multiline flat).")
@@ -292,21 +293,32 @@ function MapToCanonicalSchema(parsed_table: ParsedTable, schema: CanonicalSchema
 
     Mapping strategy by table type:
     - FlatHeader: Map each data row directly to one output record. Columns align 1:1.
-    - HierarchicalHeader: Column names may be compound from merged headers (e.g. "Q1 2025 / Revenue").
+    - HierarchicalHeader: Column names may be compound from merged headers (e.g. "Group A / Metric 1").
       First, check if canonical column aliases match PARTS of compound names:
       - If canonical columns have aliases that match the parent/child parts of compound headers
-        (e.g., "category" aliases ["Q1 2025", "Q2 2025"] and "metric" aliases ["Revenue", "Costs"]
-        match parts of "Q1 2025 / Revenue", "Q2 2025 / Costs"), you must UNPIVOT:
+        (e.g., "group" aliases ["Group A", "Group B"] and "metric" aliases ["Metric 1", "Metric 2"]
+        match parts of "Group A / Metric 1", "Group B / Metric 2"), you must UNPIVOT:
         Each data row produces MULTIPLE records (one per value column).
         The parent and child parts of each compound header become field values.
-        Example: row "Region A | 100 | 200 | 150 | 180" with columns
-        "Label | Q1 2025 / Revenue | Q1 2025 / Costs | Q2 2025 / Revenue | Q2 2025 / Costs"
-        and schema {label, category (aliases: Q1 2025, Q2 2025), metric (aliases: Revenue, Costs), value}
-        becomes FOUR records:
-        - {label: "Region A", category: "Q1 2025", metric: "Revenue", value: 100}
-        - {label: "Region A", category: "Q1 2025", metric: "Costs", value: 200}
-        - {label: "Region A", category: "Q2 2025", metric: "Revenue", value: 150}
-        - {label: "Region A", category: "Q2 2025", metric: "Costs", value: 180}
+        CRITICAL: Only unpivot columns where ALL header parts match dimension aliases.
+        If a column's header part does NOT match any alias, SKIP that column entirely —
+        do not create a record for it. This includes:
+        - Derived/calculated columns (e.g., "% change" when metric aliases are ["Revenue", "Costs"])
+        - Aggregation columns (e.g., "Total" or "TOTAL" when category aliases are ["Type A", "Type B"])
+        Common aggregation labels to skip: "Total", "TOTAL", "Subtotal", "All", "Grand Total", "Sum".
+        Unless an aggregation label is explicitly listed in aliases, skip columns containing it.
+        ALSO: Skip rows where the row label (first column value) represents an aggregation,
+        using the same aggregation labels above.
+        Example: row "Region A | 100 | 200 | +50% | 150 | 180 | -10%" with columns
+        "Label | Q1 / Revenue | Q1 / Costs | Q1 / % change | Q2 / Revenue | Q2 / Costs | Q2 / % change"
+        and schema {label, category (aliases: Q1, Q2), metric (aliases: Revenue, Costs), value}
+        becomes FOUR records (% change columns skipped because "% change" is not in metric aliases):
+        - {label: "Region A", category: "Q1", metric: "Revenue", value: 100}
+        - {label: "Region A", category: "Q1", metric: "Costs", value: 200}
+        - {label: "Region A", category: "Q2", metric: "Revenue", value: 150}
+        - {label: "Region A", category: "Q2", metric: "Costs", value: 180}
+        IMPORTANT: Each record's dimension values must come from THAT SPECIFIC column's header.
+        Do NOT use the same value for all records — "Q1" columns produce "Q1", "Q2" columns produce "Q2".
       - If no canonical aliases match parts of compound headers, match the full compound name
         against aliases and produce one record per data row.
     - PivotedTable: Categories are rows, time periods or attributes are columns. You must UNPIVOT:
@@ -327,9 +339,19 @@ function MapToCanonicalSchema(parsed_table: ParsedTable, schema: CanonicalSchema
 
     General mapping rules:
     1. Match source columns to canonical columns using name, aliases, and description.
+       - If aliases are provided, match against them literally.
+       - If aliases are EMPTY, use the description to infer what values should match:
+         * For date/time fields: match any value that looks like a year (4 digits), month,
+           date, or time period (e.g., "YYYY", "Mon", "Q1", "Month Year")
+         * For category fields: match based on semantic similarity to the description
+       This allows schemas to be robust without hardcoding specific values.
     2. If a source column matches multiple canonical columns, pick the best match and note the ambiguity.
     3. Coerce values to the expected type where possible (e.g. "1,234" -> 1234 for int columns).
-    4. For date columns, normalize to ISO 8601 format (YYYY-MM-DD) when the date is unambiguous.
+    4. FORMAT OUTPUT VALUES: If a column has a `format` field, apply it to the output:
+       - Dates: Use the specified pattern (YYYY-MM-DD, YYYY-MM, HH:mm, etc.)
+       - Numbers: Apply formatting (#,### for thousands, #.## for decimals, +# for sign, #% for percentage)
+       - Strings: Apply case transformation (uppercase, lowercase, titlecase, camelCase, PascalCase, snake_case, kebab-case, trim)
+       If no format is specified, use sensible defaults (ISO 8601 for dates, plain numbers, original case for strings).
     5. If a canonical column has no matching source column, omit it from the record (it will be null).
     6. List any source columns that could not be mapped in unmapped_columns.
     7. CONTEXT INFERENCE: If a canonical column cannot be matched to any source column
@@ -357,9 +379,9 @@ function MapToCanonicalSchema(parsed_table: ParsedTable, schema: CanonicalSchema
         - mapping_strategy_used: Describe which strategy you applied (e.g., "1:1 row mapping for FlatHeader", "unpivot for PivotedTable")
     12. EXTRACT ALL DATA — DO NOT FILTER: Schema descriptions are metadata about what the field
         represents, NOT filtering instructions. Extract ALL data rows and ALL relevant columns
-        from the source table. If a table contains data for multiple time periods (e.g. 2024
-        and 2025), extract records for ALL periods. Never skip data because a description
-        mentions "latest", "current", "recent", etc. — the user will filter downstream if needed.
+        from the source table. If a table contains data for multiple time periods, extract
+        records for ALL periods. Never skip data because a description mentions "latest",
+        "current", "recent", etc. — the user will filter downstream if needed.
 
     Parsed table:
     {{ parsed_table }}
@@ -405,11 +427,15 @@ function InterpretTable(compressed_text: string, schema: CanonicalSchema, model_
          stacked/multiline headers where text is split across multiple rows but each column
          stands alone — combine the stacked text into one column name. Map each row to one record.
        - HierarchicalHeader: Parent header cells SPAN HORIZONTALLY across multiple child columns
-         in a tree structure (e.g. "Q1 2025" spanning over "Revenue" and "Costs" columns beneath it).
-         Column names are compound paths (e.g. "Q1 2025 / Revenue").
+         in a tree structure (e.g. "Group A" spanning over "Metric 1" and "Metric 2" columns beneath it).
+         Column names are compound paths (e.g. "Group A / Metric 1").
          IMPORTANT: Check if canonical column aliases match PARTS of compound headers. If so, UNPIVOT:
          each data row produces multiple records (one per value column), with parent/child parts
-         becoming field values. If no aliases match parts, map each row to one record.
+         becoming field values. CRITICAL: Only unpivot columns where ALL header parts match dimension
+         aliases. Skip columns where any header part does NOT match aliases — this includes derived
+         columns (e.g., "% change") AND aggregation columns (e.g., "Total", "TOTAL", "Subtotal").
+         Also skip rows where the row label is an aggregation. Unless explicitly in aliases, skip it.
+         If no aliases match parts, map each row to one record.
          NOTE: Multiline/stacked headers with no horizontal spanning are FlatHeader, not this.
        - PivotedTable: Categories as rows, time periods or attributes as columns. UNPIVOT:
          for each data row, produce ONE RECORD PER VALUE COLUMN. The column header becomes
@@ -424,7 +450,16 @@ function InterpretTable(compressed_text: string, schema: CanonicalSchema, model_
              TWO records: {name: "Alice", status: "Active"}, {name: "Bob", status: "Inactive"}
     2. Extract all data rows (exclude headers and aggregation rows like totals).
     3. Match source columns to canonical columns using names, aliases, and descriptions.
-    4. Coerce values to expected types (e.g. "1,234" -> 1234 for int, dates to ISO 8601).
+       When aliases are EMPTY, use the description to infer matches — e.g., a date field
+       with empty aliases should match any year (4 digits), month name, or time period.
+       IMPORTANT: When unpivoting, each record's dimension value must come from THAT column's
+       header — e.g., "Period A" columns → "Period A", "Period B" columns → "Period B". Do NOT
+       use the same value for all records.
+    4. Coerce values to expected types and FORMAT OUTPUT VALUES per column's `format` field:
+       - Dates: Use specified pattern (YYYY-MM-DD, YYYY-MM, HH:mm, etc.)
+       - Numbers: Apply formatting (#,### for thousands, #.## for decimals, +# for sign, #% for percentage)
+       - Strings: Apply case transformation (uppercase, lowercase, titlecase, camelCase, PascalCase, snake_case, kebab-case, trim)
+       If no format specified, use defaults (ISO 8601 for dates, plain numbers, original case).
     5. List any source columns that could not be mapped.
     6. CONTEXT INFERENCE: If a canonical column cannot be matched to any source column
        (especially when its aliases list is empty), look for its value in the
@@ -450,9 +485,9 @@ function InterpretTable(compressed_text: string, schema: CanonicalSchema, model_
         - mapping_strategy_used: Describe which strategy you applied (e.g., "1:1 row mapping for FlatHeader", "unpivot for PivotedTable")
     11. EXTRACT ALL DATA — DO NOT FILTER: Schema descriptions are metadata about what the field
         represents, NOT filtering instructions. Extract ALL data rows and ALL relevant columns
-        from the source table. If a table contains data for multiple time periods (e.g. 2024
-        and 2025), extract records for ALL periods. Never skip data because a description
-        mentions "latest", "current", "recent", etc. — the user will filter downstream if needed.
+        from the source table. If a table contains data for multiple time periods, extract
+        records for ALL periods. Never skip data because a description mentions "latest",
+        "current", "recent", etc. — the user will filter downstream if needed.
 
     Important:
     - Keep values faithful to the source; only reformat for type coercion.
@@ -594,6 +629,9 @@ test sectioned_table_context_inference {
 // This is a common pattern: compound column headers (Category / Period / Metric)
 // that need to be unpivoted into a normalized schema with separate columns for
 // the category, period, and value.
+// IMPORTANT: The "% change" columns should be SKIPPED because "% change" does not
+// match any alias for the "period" dimension (which only has ["Period 1", "Period 2"]).
+// Expected output: 8 records (2 rows × 2 categories × 2 periods), NOT 12 records.
 test hierarchical_header_unpivot {
   functions [MapToCanonicalSchema]
   args {

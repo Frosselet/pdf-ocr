@@ -239,7 +239,12 @@ schema = CanonicalSchema(
 )
 ```
 
-Each `ColumnDef` takes a canonical `name`, a `type` (`string`, `int`, `float`, `bool`, `date`), a human-readable `description` the LLM uses for disambiguation, and optional `aliases`.
+Each `ColumnDef` takes:
+- **`name`** — canonical column name
+- **`type`** — one of `string`, `int`, `float`, `bool`, `date`
+- **`description`** — human-readable description the LLM uses for disambiguation
+- **`aliases`** — optional list of alternative names this column may appear as in source tables
+- **`format`** — optional output format specification (see [Output Formatting](#output-formatting) below)
 
 ### Context Inference
 
@@ -477,6 +482,166 @@ All interpretation functions accept `model` and `fallback_model` keyword argumen
     - `rationale` — brief explanation of why this mapping was chosen
     - `confidence` — `High` (direct name/alias match), `Medium` (inferred from context), or `Low` (best guess)
   - **`sections_detected`** — section/group labels found in the text (e.g. `["GERALDTON", "KWINANA"]`), or `None` if no sections were detected.
+
+## Output Formatting
+
+The `format` field on `ColumnDef` specifies how values should be formatted in the output. The format is applied both by the LLM during extraction and by the serialization module during export.
+
+### Date & Timestamp Formats
+
+| Format | Example Output | Description |
+| --- | --- | --- |
+| `YYYY-MM-DD` | `2025-01-15` | ISO date |
+| `YYYY-MM` | `2025-01` | Year-month |
+| `YYYY` | `2025` | Year only |
+| `DD/MM/YYYY` | `15/01/2025` | European date |
+| `MM/DD/YYYY` | `01/15/2025` | US date |
+| `MMM YYYY` | `Jan 2025` | Short month name |
+| `MMMM YYYY` | `January 2025` | Full month name |
+| `YYYY-MM-DD HH:mm` | `2025-01-15 14:30` | Date + time (24h) |
+| `YYYY-MM-DD HH:mm:ss` | `2025-01-15 14:30:45` | Date + time + seconds |
+| `YYYY-MM-DDTHH:mm:ssZ` | `2025-01-15T14:30:45Z` | ISO 8601 UTC |
+| `HH:mm` | `14:30` | Time only (24h) |
+| `HH:mm:ss` | `14:30:45` | Time with seconds |
+| `hh:mm A` | `02:30 PM` | Time (12h with AM/PM) |
+
+### Number Formats
+
+| Format | Example Output | Description |
+| --- | --- | --- |
+| `#` | `1234` | Plain integer |
+| `#.##` | `1234.56` | 2 decimal places |
+| `#.####` | `1234.5678` | 4 decimal places |
+| `#,###` | `1,234` | Thousands separator |
+| `#,###.##` | `1,234.56` | Both |
+| `+#` | `+1234` / `-1234` | Explicit sign |
+| `#%` | `12.5%` | Percentage |
+| `(#)` | `(1234)` | Negative in parentheses |
+
+### String Formats
+
+| Format | Example Output | Description |
+| --- | --- | --- |
+| `uppercase` | `HELLO WORLD` | All caps |
+| `lowercase` | `hello world` | All lower |
+| `titlecase` | `Hello World` | Title Case |
+| `capitalize` | `Hello world` | First letter only |
+| `camelCase` | `helloWorld` | camelCase |
+| `PascalCase` | `HelloWorld` | PascalCase |
+| `snake_case` | `hello_world` | snake_case |
+| `SCREAMING_SNAKE_CASE` | `HELLO_WORLD` | SCREAMING_SNAKE_CASE |
+| `kebab-case` | `hello-world` | kebab-case |
+| `SCREAMING-KEBAB-CASE` | `HELLO-WORLD` | SCREAMING-KEBAB-CASE |
+| `trim` | `hello` | Strip whitespace |
+
+### Format Usage Example
+
+```python
+schema = CanonicalSchema(columns=[
+    ColumnDef("country", "string", "Country name", aliases=["Country"], format="uppercase"),
+    ColumnDef("date", "string", "Registration period", aliases=[], format="YYYY-MM"),
+    ColumnDef("registrations", "int", "Number of registrations", aliases=["Units"], format="#,###"),
+    ColumnDef("growth", "float", "YoY growth rate", aliases=["% Change"], format="+#.##%"),
+])
+```
+
+Output:
+
+```csv
+country,date,registrations,growth
+GERMANY,2025-01,"1,234,567",+12.35%
+FRANCE,2024-06,"987,654",-5.67%
+```
+
+## Serialization
+
+After interpreting tables, the `serialize` module exports results to common formats — CSV, TSV, Parquet, pandas DataFrames, and polars DataFrames. All functions validate records against the canonical schema using Pydantic before serialization, and apply output formatting specified in the schema's `format` field.
+
+### Features
+
+- **Pydantic validation**: Records are validated against the `CanonicalSchema` types before export
+- **OCR artifact coercion**: Handles common OCR artifacts automatically:
+  - Comma-separated numbers: `"1,234"` → `1234`
+  - Negative in parentheses: `"(500)"` → `-500`
+  - Percentage strings: `"12.5%"` → `12.5`
+  - Boolean strings: `"yes"`, `"true"`, `"1"` → `True`
+  - Empty/whitespace → `None`
+- **Output formatting**: Applies format specifications from the schema (dates, numbers, strings)
+- **Page column**: Optional `include_page=True` adds a 1-indexed page number column
+- **Proper nullable types**: pandas uses `Int64`/`Float64`/`string`/`boolean` nullable dtypes; polars uses native nullable types
+
+### Serialization API
+
+```python
+from pdf_ocr import to_csv, to_tsv, to_parquet, to_pandas, to_polars
+
+# CSV/TSV: return string or write to file
+csv_str = to_csv(result, schema)                          # Returns CSV string
+to_csv(result, schema, path="output.csv")                 # Writes file, returns None
+to_csv(result, schema, path="output.csv", include_page=True)  # With page column
+
+tsv_str = to_tsv(result, schema)                          # Same API as to_csv
+
+# Parquet: always writes to file (requires pyarrow)
+to_parquet(result, schema, "output.parquet")
+to_parquet(result, schema, "output.parquet", include_page=True)
+
+# DataFrames (require pandas/polars)
+df = to_pandas(result, schema)                            # pandas.DataFrame
+df = to_pandas(result, schema, include_page=True)
+
+pl_df = to_polars(result, schema)                         # polars.DataFrame
+pl_df = to_polars(result, schema, include_page=True)
+```
+
+### Function Signatures
+
+| Function | Returns | Writes to file | Requires |
+| --- | --- | --- | --- |
+| `to_csv(result, schema, *, path=None, include_page=False)` | `str \| None` | If `path` provided | stdlib |
+| `to_tsv(result, schema, *, path=None, include_page=False)` | `str \| None` | If `path` provided | stdlib |
+| `to_parquet(result, schema, path, *, include_page=False)` | `None` | Always | `pyarrow` |
+| `to_pandas(result, schema, *, include_page=False)` | `pd.DataFrame` | No | `pandas` |
+| `to_polars(result, schema, *, include_page=False)` | `pl.DataFrame` | No | `polars` |
+
+### Type Mapping
+
+| Schema type | Python type | pandas dtype | polars dtype |
+| --- | --- | --- | --- |
+| `string` | `str \| None` | `string` | `Utf8` |
+| `int` | `int \| None` | `Int64` | `Int64` |
+| `float` | `float \| None` | `Float64` | `Float64` |
+| `bool` | `bool \| None` | `boolean` | `Boolean` |
+| `date` | `str \| None` | `string` | `Utf8` |
+
+### Optional Dependencies
+
+Install optional dependencies for DataFrame/Parquet support:
+
+```bash
+pip install pdf-ocr[dataframes]  # pandas + polars
+pip install pdf-ocr[parquet]     # pyarrow
+pip install pdf-ocr[all]         # everything
+```
+
+When a required library is missing, functions raise a helpful `ImportError` with installation instructions.
+
+### Validation Errors
+
+If a record fails validation, `SerializationValidationError` is raised:
+
+```python
+from pdf_ocr import SerializationValidationError
+
+try:
+    csv_str = to_csv(result, schema)
+except SerializationValidationError as e:
+    print(f"Record {e.record_index} failed: {e}")
+    print(f"Column: {e.column_name}")
+    print(f"Original error: {e.original_error}")
+```
+
+In practice, validation rarely fails because the coercion logic converts invalid values to `None`, which is allowed for all columns.
 
 ## Limitations
 

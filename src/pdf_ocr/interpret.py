@@ -57,12 +57,27 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class ColumnDef:
-    """Definition of a single canonical column."""
+    """Definition of a single canonical column.
+
+    Attributes:
+        name: Canonical column name.
+        type: Expected type - "string", "int", "float", "bool", "date".
+        description: What this column represents.
+        aliases: Alternative names this column may appear as in source tables.
+        format: Output format specification (optional).
+            - Dates: YYYY-MM-DD, YYYY-MM, YYYY, DD/MM/YYYY, MM/DD/YYYY, MMM YYYY,
+              MMMM YYYY, YYYY-MM-DD HH:mm, YYYY-MM-DD HH:mm:ss, HH:mm, hh:mm A, etc.
+            - Numbers: # (plain), #.## (decimals), #,### (thousands), #,###.## (both),
+              +# (explicit sign), #% (percentage), (#) (negative in parentheses).
+            - Strings: uppercase, lowercase, titlecase, capitalize, camelCase,
+              PascalCase, snake_case, SCREAMING_SNAKE_CASE, kebab-case, trim.
+    """
 
     name: str
     type: str  # "string", "int", "float", "bool", "date"
     description: str
     aliases: list[str] = field(default_factory=list)
+    format: str | None = None
 
 
 @dataclass
@@ -97,6 +112,7 @@ class CanonicalSchema:
                 type=c.get("type", "string"),
                 description=c.get("description", ""),
                 aliases=c.get("aliases", []),
+                format=c.get("format"),
             )
             for c in data["columns"]
         ]
@@ -139,6 +155,7 @@ def _to_baml_schema(schema: CanonicalSchema) -> baml_types.CanonicalSchema:
                 type=c.type,
                 description=c.description,
                 aliases=c.aliases,
+                format=c.format,
             )
             for c in schema.columns
         ],
