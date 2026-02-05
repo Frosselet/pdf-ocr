@@ -1,9 +1,9 @@
 // Defining a data model.
 class Resume {
-  name string
-  email string
-  experience string[]
-  skills string[]
+  name string @description("Full name of the person")
+  email string @description("Email address")
+  experience string[] @description("List of work experience entries (e.g. role and company)")
+  skills string[] @description("List of technical or professional skills")
 }
 
 // Create a function to extract the resume from a string.

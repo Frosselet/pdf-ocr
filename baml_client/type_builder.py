@@ -20,13 +20,13 @@ from .globals import DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_RUNTIM
 class TypeBuilder(type_builder.TypeBuilder):
     def __init__(self):
         super().__init__(classes=set(
-          ["AggregationInfo","CanonicalSchema","ColumnDef","DetectedTable","FieldMapping","HeaderInfo","InferredTableSchema","InterpretationMetadata","MappedRecord","MappedTable","ParsedTable","RefinedHeaders","Resume","TableTypeInference",]
+          ["AggregationInfo","CanonicalSchema","ColumnDef","DetectedTable","FieldMapping","HeaderInfo","InferredTableSchema","InterpretationMetadata","MappedRecord","MappedTable","PageSection","ParsedTable","RefinedHeaders","Resume","TableStructure","TableTypeInference",]
         ), enums=set(
-          ["AggregationType","Confidence","TableType",]
+          ["AggregationType","Confidence","HeaderOrientation","HeaderStructure","MultiRowPattern","PageSectionType","TableLayout","TableType",]
         ), runtime=DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_RUNTIME)
 
     # #########################################################################
-    # Generated enums 3
+    # Generated enums 8
     # #########################################################################
 
     @property
@@ -38,12 +38,32 @@ class TypeBuilder(type_builder.TypeBuilder):
         return ConfidenceViewer(self)
 
     @property
+    def HeaderOrientation(self) -> "HeaderOrientationViewer":
+        return HeaderOrientationViewer(self)
+
+    @property
+    def HeaderStructure(self) -> "HeaderStructureViewer":
+        return HeaderStructureViewer(self)
+
+    @property
+    def MultiRowPattern(self) -> "MultiRowPatternViewer":
+        return MultiRowPatternViewer(self)
+
+    @property
+    def PageSectionType(self) -> "PageSectionTypeViewer":
+        return PageSectionTypeViewer(self)
+
+    @property
+    def TableLayout(self) -> "TableLayoutViewer":
+        return TableLayoutViewer(self)
+
+    @property
     def TableType(self) -> "TableTypeViewer":
         return TableTypeViewer(self)
 
 
     # #########################################################################
-    # Generated classes 14
+    # Generated classes 16
     # #########################################################################
 
     @property
@@ -87,6 +107,10 @@ class TypeBuilder(type_builder.TypeBuilder):
         return MappedTableViewer(self)
 
     @property
+    def PageSection(self) -> "PageSectionViewer":
+        return PageSectionViewer(self)
+
+    @property
     def ParsedTable(self) -> "ParsedTableViewer":
         return ParsedTableViewer(self)
 
@@ -99,13 +123,17 @@ class TypeBuilder(type_builder.TypeBuilder):
         return ResumeViewer(self)
 
     @property
+    def TableStructure(self) -> "TableStructureViewer":
+        return TableStructureViewer(self)
+
+    @property
     def TableTypeInference(self) -> "TableTypeInferenceViewer":
         return TableTypeInferenceViewer(self)
 
 
 
 # #########################################################################
-# Generated enums 3
+# Generated enums 8
 # #########################################################################
 
 class AggregationTypeAst:
@@ -216,6 +244,244 @@ class ConfidenceValues:
     
 
 
+class HeaderOrientationAst:
+    def __init__(self, tb: type_builder.TypeBuilder):
+        _tb = tb._tb # type: ignore (we know how to use this private attribute)
+        self._bldr = _tb.enum("HeaderOrientation")
+        self._values: typing.Set[str] = set([  "Top",  "Left",  ])
+        self._vals = HeaderOrientationValues(self._bldr, self._values)
+
+    def type(self) -> baml_py.FieldType:
+        return self._bldr.field()
+
+    @property
+    def values(self) -> "HeaderOrientationValues":
+        return self._vals
+
+
+class HeaderOrientationViewer(HeaderOrientationAst):
+    def __init__(self, tb: type_builder.TypeBuilder):
+        super().__init__(tb)
+
+    
+    def list_values(self) -> typing.List[typing.Tuple[str, type_builder.EnumValueViewer]]:
+        return [(name, type_builder.EnumValueViewer(self._bldr.value(name))) for name in self._values]
+    
+
+class HeaderOrientationValues:
+    def __init__(self, enum_bldr: baml_py.EnumBuilder, values: typing.Set[str]):
+        self.__bldr = enum_bldr
+        self.__values = values # type: ignore (we know how to use this private attribute) # noqa: F821
+
+    
+    
+    @property
+    def Top(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Top"))
+    
+    @property
+    def Left(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Left"))
+    
+    
+
+
+class HeaderStructureAst:
+    def __init__(self, tb: type_builder.TypeBuilder):
+        _tb = tb._tb # type: ignore (we know how to use this private attribute)
+        self._bldr = _tb.enum("HeaderStructure")
+        self._values: typing.Set[str] = set([  "SingleRow",  "Stacked",  "Hierarchical",  ])
+        self._vals = HeaderStructureValues(self._bldr, self._values)
+
+    def type(self) -> baml_py.FieldType:
+        return self._bldr.field()
+
+    @property
+    def values(self) -> "HeaderStructureValues":
+        return self._vals
+
+
+class HeaderStructureViewer(HeaderStructureAst):
+    def __init__(self, tb: type_builder.TypeBuilder):
+        super().__init__(tb)
+
+    
+    def list_values(self) -> typing.List[typing.Tuple[str, type_builder.EnumValueViewer]]:
+        return [(name, type_builder.EnumValueViewer(self._bldr.value(name))) for name in self._values]
+    
+
+class HeaderStructureValues:
+    def __init__(self, enum_bldr: baml_py.EnumBuilder, values: typing.Set[str]):
+        self.__bldr = enum_bldr
+        self.__values = values # type: ignore (we know how to use this private attribute) # noqa: F821
+
+    
+    
+    @property
+    def SingleRow(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("SingleRow"))
+    
+    @property
+    def Stacked(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Stacked"))
+    
+    @property
+    def Hierarchical(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Hierarchical"))
+    
+    
+
+
+class MultiRowPatternAst:
+    def __init__(self, tb: type_builder.TypeBuilder):
+        _tb = tb._tb # type: ignore (we know how to use this private attribute)
+        self._bldr = _tb.enum("MultiRowPattern")
+        self._values: typing.Set[str] = set([  "SingleRow",  "RepeatingGroup",  ])
+        self._vals = MultiRowPatternValues(self._bldr, self._values)
+
+    def type(self) -> baml_py.FieldType:
+        return self._bldr.field()
+
+    @property
+    def values(self) -> "MultiRowPatternValues":
+        return self._vals
+
+
+class MultiRowPatternViewer(MultiRowPatternAst):
+    def __init__(self, tb: type_builder.TypeBuilder):
+        super().__init__(tb)
+
+    
+    def list_values(self) -> typing.List[typing.Tuple[str, type_builder.EnumValueViewer]]:
+        return [(name, type_builder.EnumValueViewer(self._bldr.value(name))) for name in self._values]
+    
+
+class MultiRowPatternValues:
+    def __init__(self, enum_bldr: baml_py.EnumBuilder, values: typing.Set[str]):
+        self.__bldr = enum_bldr
+        self.__values = values # type: ignore (we know how to use this private attribute) # noqa: F821
+
+    
+    
+    @property
+    def SingleRow(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("SingleRow"))
+    
+    @property
+    def RepeatingGroup(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("RepeatingGroup"))
+    
+    
+
+
+class PageSectionTypeAst:
+    def __init__(self, tb: type_builder.TypeBuilder):
+        _tb = tb._tb # type: ignore (we know how to use this private attribute)
+        self._bldr = _tb.enum("PageSectionType")
+        self._values: typing.Set[str] = set([  "TableHeader",  "DataGrid",  "SectionHeading",  "Metadata",  "Prose",  "AggregationRow",  "Footnote",  ])
+        self._vals = PageSectionTypeValues(self._bldr, self._values)
+
+    def type(self) -> baml_py.FieldType:
+        return self._bldr.field()
+
+    @property
+    def values(self) -> "PageSectionTypeValues":
+        return self._vals
+
+
+class PageSectionTypeViewer(PageSectionTypeAst):
+    def __init__(self, tb: type_builder.TypeBuilder):
+        super().__init__(tb)
+
+    
+    def list_values(self) -> typing.List[typing.Tuple[str, type_builder.EnumValueViewer]]:
+        return [(name, type_builder.EnumValueViewer(self._bldr.value(name))) for name in self._values]
+    
+
+class PageSectionTypeValues:
+    def __init__(self, enum_bldr: baml_py.EnumBuilder, values: typing.Set[str]):
+        self.__bldr = enum_bldr
+        self.__values = values # type: ignore (we know how to use this private attribute) # noqa: F821
+
+    
+    
+    @property
+    def TableHeader(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("TableHeader"))
+    
+    @property
+    def DataGrid(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("DataGrid"))
+    
+    @property
+    def SectionHeading(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("SectionHeading"))
+    
+    @property
+    def Metadata(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Metadata"))
+    
+    @property
+    def Prose(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Prose"))
+    
+    @property
+    def AggregationRow(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("AggregationRow"))
+    
+    @property
+    def Footnote(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Footnote"))
+    
+    
+
+
+class TableLayoutAst:
+    def __init__(self, tb: type_builder.TypeBuilder):
+        _tb = tb._tb # type: ignore (we know how to use this private attribute)
+        self._bldr = _tb.enum("TableLayout")
+        self._values: typing.Set[str] = set([  "Standard",  "Transposed",  "CrossTab",  ])
+        self._vals = TableLayoutValues(self._bldr, self._values)
+
+    def type(self) -> baml_py.FieldType:
+        return self._bldr.field()
+
+    @property
+    def values(self) -> "TableLayoutValues":
+        return self._vals
+
+
+class TableLayoutViewer(TableLayoutAst):
+    def __init__(self, tb: type_builder.TypeBuilder):
+        super().__init__(tb)
+
+    
+    def list_values(self) -> typing.List[typing.Tuple[str, type_builder.EnumValueViewer]]:
+        return [(name, type_builder.EnumValueViewer(self._bldr.value(name))) for name in self._values]
+    
+
+class TableLayoutValues:
+    def __init__(self, enum_bldr: baml_py.EnumBuilder, values: typing.Set[str]):
+        self.__bldr = enum_bldr
+        self.__values = values # type: ignore (we know how to use this private attribute) # noqa: F821
+
+    
+    
+    @property
+    def Standard(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Standard"))
+    
+    @property
+    def Transposed(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Transposed"))
+    
+    @property
+    def CrossTab(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("CrossTab"))
+    
+    
+
+
 class TableTypeAst:
     def __init__(self, tb: type_builder.TypeBuilder):
         _tb = tb._tb # type: ignore (we know how to use this private attribute)
@@ -272,7 +538,7 @@ class TableTypeValues:
 
 
 # #########################################################################
-# Generated classes 14
+# Generated classes 16
 # #########################################################################
 
 class AggregationInfoAst:
@@ -424,7 +690,7 @@ class DetectedTableAst:
     def __init__(self, tb: type_builder.TypeBuilder):
         _tb = tb._tb # type: ignore (we know how to use this private attribute)
         self._bldr = _tb.class_("DetectedTable")
-        self._properties: typing.Set[str] = set([  "column_names",  "data_rows",  "notes",  ])
+        self._properties: typing.Set[str] = set([  "layout",  "header_structure",  "column_names",  "data_rows",  "notes",  ])
         self._props = DetectedTableProperties(self._bldr, self._properties)
 
     def type(self) -> baml_py.FieldType:
@@ -451,6 +717,14 @@ class DetectedTableProperties:
         self.__properties = properties # type: ignore (we know how to use this private attribute) # noqa: F821
 
     
+    
+    @property
+    def layout(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("layout"))
+    
+    @property
+    def header_structure(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("header_structure"))
     
     @property
     def column_names(self) -> type_builder.ClassPropertyViewer:
@@ -774,6 +1048,53 @@ class MappedTableProperties:
     
 
 
+class PageSectionAst:
+    def __init__(self, tb: type_builder.TypeBuilder):
+        _tb = tb._tb # type: ignore (we know how to use this private attribute)
+        self._bldr = _tb.class_("PageSection")
+        self._properties: typing.Set[str] = set([  "type",  "label",  "row_range",  ])
+        self._props = PageSectionProperties(self._bldr, self._properties)
+
+    def type(self) -> baml_py.FieldType:
+        return self._bldr.field()
+
+    @property
+    def props(self) -> "PageSectionProperties":
+        return self._props
+
+
+class PageSectionViewer(PageSectionAst):
+    def __init__(self, tb: type_builder.TypeBuilder):
+        super().__init__(tb)
+
+    
+    def list_properties(self) -> typing.List[typing.Tuple[str, type_builder.ClassPropertyViewer]]:
+        return [(name, type_builder.ClassPropertyViewer(self._bldr.property(name))) for name in self._properties]
+    
+
+
+class PageSectionProperties:
+    def __init__(self, bldr: baml_py.ClassBuilder, properties: typing.Set[str]):
+        self.__bldr = bldr
+        self.__properties = properties # type: ignore (we know how to use this private attribute) # noqa: F821
+
+    
+    
+    @property
+    def type(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("type"))
+    
+    @property
+    def label(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("label"))
+    
+    @property
+    def row_range(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("row_range"))
+    
+    
+
+
 class ParsedTableAst:
     def __init__(self, tb: type_builder.TypeBuilder):
         _tb = tb._tb # type: ignore (we know how to use this private attribute)
@@ -833,7 +1154,7 @@ class RefinedHeadersAst:
     def __init__(self, tb: type_builder.TypeBuilder):
         _tb = tb._tb # type: ignore (we know how to use this private attribute)
         self._bldr = _tb.class_("RefinedHeaders")
-        self._properties: typing.Set[str] = set([  "header_row_count",  "column_names",  "notes",  ])
+        self._properties: typing.Set[str] = set([  "header_structure",  "header_row_count",  "column_names",  "notes",  ])
         self._props = RefinedHeadersProperties(self._bldr, self._properties)
 
     def type(self) -> baml_py.FieldType:
@@ -860,6 +1181,10 @@ class RefinedHeadersProperties:
         self.__properties = properties # type: ignore (we know how to use this private attribute) # noqa: F821
 
     
+    
+    @property
+    def header_structure(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("header_structure"))
     
     @property
     def header_row_count(self) -> type_builder.ClassPropertyViewer:
@@ -923,6 +1248,77 @@ class ResumeProperties:
     @property
     def skills(self) -> type_builder.ClassPropertyViewer:
         return type_builder.ClassPropertyViewer(self.__bldr.property("skills"))
+    
+    
+
+
+class TableStructureAst:
+    def __init__(self, tb: type_builder.TypeBuilder):
+        _tb = tb._tb # type: ignore (we know how to use this private attribute)
+        self._bldr = _tb.class_("TableStructure")
+        self._properties: typing.Set[str] = set([  "layout",  "header_structure",  "header_orientation",  "header_row_count",  "multi_row_pattern",  "multi_row_period",  "data_column_count",  "column_names",  "notes",  ])
+        self._props = TableStructureProperties(self._bldr, self._properties)
+
+    def type(self) -> baml_py.FieldType:
+        return self._bldr.field()
+
+    @property
+    def props(self) -> "TableStructureProperties":
+        return self._props
+
+
+class TableStructureViewer(TableStructureAst):
+    def __init__(self, tb: type_builder.TypeBuilder):
+        super().__init__(tb)
+
+    
+    def list_properties(self) -> typing.List[typing.Tuple[str, type_builder.ClassPropertyViewer]]:
+        return [(name, type_builder.ClassPropertyViewer(self._bldr.property(name))) for name in self._properties]
+    
+
+
+class TableStructureProperties:
+    def __init__(self, bldr: baml_py.ClassBuilder, properties: typing.Set[str]):
+        self.__bldr = bldr
+        self.__properties = properties # type: ignore (we know how to use this private attribute) # noqa: F821
+
+    
+    
+    @property
+    def layout(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("layout"))
+    
+    @property
+    def header_structure(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("header_structure"))
+    
+    @property
+    def header_orientation(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("header_orientation"))
+    
+    @property
+    def header_row_count(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("header_row_count"))
+    
+    @property
+    def multi_row_pattern(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("multi_row_pattern"))
+    
+    @property
+    def multi_row_period(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("multi_row_period"))
+    
+    @property
+    def data_column_count(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("data_column_count"))
+    
+    @property
+    def column_names(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("column_names"))
+    
+    @property
+    def notes(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("notes"))
     
     
 

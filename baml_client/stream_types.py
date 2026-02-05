@@ -23,7 +23,7 @@ class StreamState(BaseModel, typing.Generic[StreamStateValueT]):
     value: StreamStateValueT
     state: typing_extensions.Literal["Pending", "Incomplete", "Complete"]
 # #########################################################################
-# Generated classes (14)
+# Generated classes (16)
 # #########################################################################
 
 class AggregationInfo(BaseModel):
@@ -43,33 +43,35 @@ class ColumnDef(BaseModel):
     format: typing.Optional[str] = Field(default=None, description='Output format specification. For dates: YYYY-MM-DD, YYYY-MM, HH:mm:ss, etc. For numbers: #,###.## (thousands + decimals), +# (explicit sign), #% (percentage). For strings: uppercase, lowercase, titlecase, camelCase, PascalCase, snake_case, kebab-case, trim.')
 
 class DetectedTable(BaseModel):
-    column_names: typing.List[str] = Field(description='Column headers, one per data column')
-    data_rows: typing.List[typing.List[str]] = Field(description='Data rows excluding headers and aggregation/total rows. Each inner array has one cell value per column. Keep values as strings exactly as they appear. Use empty string for empty cells.')
+    layout: typing.Optional[types.TableLayout] = Field(default=None, description='Geometric arrangement of records and fields in the table.')
+    header_structure: typing.Optional[types.HeaderStructure] = Field(default=None, description='Vertical organization of the column labels.')
+    column_names: typing.List[str] = Field(description='Column headers, one per data column.')
+    data_rows: typing.List[typing.List[str]] = Field(description='Data rows. Each inner array has one cell value per column.')
     notes: typing.Optional[str] = Field(default=None, description='Observations: sections found, aggregation rows excluded, etc.')
 
 class FieldMapping(BaseModel):
     column_name: typing.Optional[str] = Field(default=None, description='Canonical column name from the schema')
-    source: typing.Optional[str] = Field(default=None, description='Where the value came from, e.g. \'column: Vessel Name\', \'section header\', \'document title\', \'inferred from context\'')
+    source: typing.Optional[str] = Field(default=None, description='Where the value came from, e.g. \'column: Field A\', \'section header\', \'document title\', \'inferred from context\'')
     rationale: typing.Optional[str] = Field(default=None, description='Brief explanation of why this mapping was chosen')
     confidence: typing.Optional[types.Confidence] = None
 
 class HeaderInfo(BaseModel):
-    levels: typing.Optional[int] = Field(default=None, description='Number of header rows. For FlatHeader with stacked/multiline labels, this counts the text rows but names[][] should contain the combined column names. For HierarchicalHeader, this counts the hierarchy depth.')
-    names: typing.List[typing.List[str]] = Field(description='Header names per level, outer = level, inner = columns. For FlatHeader (even with multiline labels), use a single level with combined names. For HierarchicalHeader, each level represents a tier in the tree.')
+    levels: typing.Optional[int] = Field(default=None, description='Number of header rows.')
+    names: typing.List[typing.List[str]] = Field(description='Header names per level, outer = level, inner = columns.')
 
 class InferredTableSchema(BaseModel):
-    column_names: typing.List[str] = Field(description='Column headers as they visually appear in the table, left to right. For stacked/multiline headers, combine the vertically stacked labels into a single name per column (e.g. \'Unique Slot Reference Number\'). For hierarchical headers with spanning parents, use compound paths (e.g. \'Group A / Metric 1\').')
+    column_names: typing.List[str] = Field(description='Column headers as they visually appear in the table, left to right. One entry per data column.')
     column_count: typing.Optional[int] = Field(default=None, description='Total number of data columns')
     header_levels: typing.Optional[int] = Field(default=None, description='Number of header rows (1 for single-row, >1 for stacked/multiline or hierarchical)')
-    has_spanning_headers: typing.Optional[bool] = Field(default=None, description='True if parent cells span multiple child columns (hierarchical). False if headers are just stacked text with no spanning (multiline flat).')
+    has_spanning_headers: typing.Optional[bool] = Field(default=None, description='True if parent cells span multiple child columns (hierarchical). False otherwise.')
     notes: typing.Optional[str] = Field(default=None, description='Observations about the header structure: merged cells, stacked labels, spanning parent cells, visual groupings, etc.')
 
 class InterpretationMetadata(BaseModel):
     model: typing.Optional[str] = Field(default=None, description='Model that produced this result, e.g. \'openai/gpt-4o\'')
     table_type_inference: typing.Optional["TableTypeInference"] = Field(default=None, description='The table type from Step 1 and which mapping strategy was applied')
     field_mappings: typing.List["FieldMapping"] = Field(description='One entry per canonical column, explaining how it was resolved')
-    sections_detected: typing.Optional[typing.List[str]] = Field(default=None, description='Section/group labels found in the text, if any (e.g. [\'GERALDTON\', \'KWINANA\'])')
-    section_role: typing.Optional[str] = Field(default=None, description='\'context\' if a single section label applies to all rows, \'grouping\' if multiple labels partition rows into groups')
+    sections_detected: typing.Optional[typing.List[str]] = Field(default=None, description='Section/group labels found in the text, if any (e.g. [\'GROUP A\', \'GROUP B\'])')
+    section_role: typing.Optional[str] = Field(default=None, description='Role of section labels: \'context\' or \'grouping\'')
 
 class MappedRecord(BaseModel):
     model_config = ConfigDict(extra='allow')
@@ -80,23 +82,40 @@ class MappedTable(BaseModel):
     mapping_notes: typing.Optional[str] = Field(default=None, description='Notes about the mapping process, e.g. ambiguous matches or type coercion issues')
     metadata: typing.Optional["InterpretationMetadata"] = Field(default=None, description='Metadata about the interpretation: model used, per-field mapping rationale, detected sections')
 
+class PageSection(BaseModel):
+    type: typing.Optional[types.PageSectionType] = Field(default=None, description='What kind of content this section contains.')
+    label: typing.Optional[str] = Field(default=None, description='Text label for this section (e.g. heading text, group name). Null for unlabeled sections.')
+    row_range: typing.Optional[str] = Field(default=None, description='Row range in the spatial grid, e.g. \'0-3\' or \'4-35\'.')
+
 class ParsedTable(BaseModel):
     table_type: typing.Optional[types.TableType] = None
     headers: typing.Optional["HeaderInfo"] = None
     aggregations: typing.Optional["AggregationInfo"] = Field(default=None, description='Present only if the table contains aggregation rows/columns')
-    data_rows: typing.List[typing.List[str]] = Field(description='All data rows (excluding headers and aggregation rows). Each inner array is one row of cell values as strings.')
+    data_rows: typing.List[typing.List[str]] = Field(description='All data rows. Each inner array is one row of cell values as strings.')
     notes: typing.Optional[str] = Field(default=None, description='Any caveats or observations about the table structure')
 
 class RefinedHeaders(BaseModel):
-    header_row_count: typing.Optional[int] = Field(default=None, description='Number of rows at the top that are headers (not data). Count all rows containing column labels, units, or grouping text.')
-    column_names: typing.List[str] = Field(description='Clean column names, one per data column. Combine multiline/stacked text into single names. For hierarchical spanning headers, use \'Parent / Child\' paths.')
-    notes: typing.Optional[str] = Field(default=None, description='Observations: merged cells, stacked labels, spanning parents, missing headers, etc.')
+    header_structure: typing.Optional[types.HeaderStructure] = Field(default=None, description='Vertical organization of the column labels.')
+    header_row_count: typing.Optional[int] = Field(default=None, description='Number of rows occupied by column labels.')
+    column_names: typing.List[str] = Field(description='Clean column names, one per data column.')
+    notes: typing.Optional[str] = Field(default=None, description='Observations: merged cells, spanning parents, missing headers, etc.')
 
 class Resume(BaseModel):
-    name: typing.Optional[str] = None
-    email: typing.Optional[str] = None
-    experience: typing.List[str]
-    skills: typing.List[str]
+    name: typing.Optional[str] = Field(default=None, description='Full name of the person')
+    email: typing.Optional[str] = Field(default=None, description='Email address')
+    experience: typing.List[str] = Field(description='List of work experience entries (e.g. role and company)')
+    skills: typing.List[str] = Field(description='List of technical or professional skills')
+
+class TableStructure(BaseModel):
+    layout: typing.Optional[types.TableLayout] = Field(default=None, description='Geometric arrangement of records and fields.')
+    header_structure: typing.Optional[types.HeaderStructure] = Field(default=None, description='How column labels are organized vertically.')
+    header_orientation: typing.Optional[types.HeaderOrientation] = Field(default=None, description='Whether labels are above (Top) or left of (Left) data.')
+    header_row_count: typing.Optional[int] = Field(default=None, description='Number of rows occupied by headers. Data begins after this count.')
+    multi_row_pattern: typing.Optional[types.MultiRowPattern] = Field(default=None, description='Whether records span multiple rows.')
+    multi_row_period: typing.Optional[int] = Field(default=None, description='Rows per record when multi_row_pattern is RepeatingGroup. Null otherwise.')
+    data_column_count: typing.Optional[int] = Field(default=None, description='Number of data columns in the table body.')
+    column_names: typing.List[str] = Field(description='Resolved column names, one per data column. For Stacked headers, these are the vertically concatenated names. For Hierarchical, these are compound \'Parent / Child\' paths.')
+    notes: typing.Optional[str] = Field(default=None, description='Observations about structure: ambiguities, confidence, unusual patterns.')
 
 class TableTypeInference(BaseModel):
     table_type: typing.Optional[types.TableType] = Field(default=None, description='Table type from Step 1 (do not re-classify)')

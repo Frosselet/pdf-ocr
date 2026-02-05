@@ -5,7 +5,7 @@
 
 enum TableType {
   FlatHeader @description("Standard table: headers in top row(s), data in subsequent rows. Each column is independent (no spanning parent cells). Header text may wrap across multiple rows vertically but each column stands alone. 1:1 row-to-record mapping. Key sign: first column contains different values per row (IDs, names, categories).")
-  HierarchicalHeader @description("Tree-structured headers where parent cells span horizontally across multiple child columns (e.g. 'Group A' spanning 'Metric 1' and 'Metric 2'). Column names become compound paths (e.g. 'Group A / Metric 1'). 1:1 row-to-record mapping. Key sign: header row has FEWER cells than data rows because parents span multiple children. Note: stacked/multiline headers with no horizontal spanning are FlatHeader, not this.")
+  HierarchicalHeader @description("Tree-structured headers where parent cells span horizontally across multiple child columns (e.g. 'Group A' spanning 'Metric 1' and 'Metric 2'). Column names become compound paths (e.g. 'Group A / Metric 1'). Mapping may produce 1:1 records or require unpivoting depending on the canonical schema. Key sign: header row has FEWER cells than data rows because parents span multiple children. Note: stacked/multiline headers with no horizontal spanning are FlatHeader, not this.")
   PivotedTable @description("Cross-tabulation: row labels are categories, column headers are time periods or attributes, cells are values. Requires unpivoting: each source row produces multiple output records (one per value column). Key sign: column headers are dates, periods, or repeated attribute names; first column contains category labels; cells contain numeric values.")
   TransposedTable @description("Property sheet layout: field NAMES as rows (left column), field VALUES as columns. Each column (after the label column) represents a complete record. Requires transposition: each column becomes one output record, each row provides one field. Key signs: (1) first column contains field names like 'Name', 'Date', 'Status', 'Total'; (2) subsequent columns contain the corresponding values; (3) rows are heterogeneous (mix of dates, numbers, text) because each row is a different field type.")
   Unknown @description("Ambiguous structure — use best judgment based on content")
@@ -30,8 +30,8 @@ enum Confidence {
 // ─── Intermediate pipeline types ─────────────────────────────────────────────
 
 class HeaderInfo {
-  levels int @description("Number of header rows. For FlatHeader with stacked/multiline labels, this counts the text rows but names[][] should contain the combined column names. For HierarchicalHeader, this counts the hierarchy depth.")
-  names string[][] @description("Header names per level, outer = level, inner = columns. For FlatHeader (even with multiline labels), use a single level with combined names. For HierarchicalHeader, each level represents a tier in the tree.")
+  levels int @description("Number of header rows.")
+  names string[][] @description("Header names per level, outer = level, inner = columns.")
 }
 
 class AggregationInfo {
@@ -44,7 +44,7 @@ class ParsedTable {
   table_type TableType
   headers HeaderInfo
   aggregations AggregationInfo? @description("Present only if the table contains aggregation rows/columns")
-  data_rows string[][] @description("All data rows (excluding headers and aggregation rows). Each inner array is one row of cell values as strings.")
+  data_rows string[][] @description("All data rows. Each inner array is one row of cell values as strings.")
   notes string? @description("Any caveats or observations about the table structure")
 }
 
@@ -69,7 +69,7 @@ class MappedRecord {
 
 class FieldMapping {
   column_name string  @description("Canonical column name from the schema")
-  source string       @description("Where the value came from, e.g. 'column: Vessel Name', 'section header', 'document title', 'inferred from context'")
+  source string       @description("Where the value came from, e.g. 'column: Field A', 'section header', 'document title', 'inferred from context'")
   rationale string    @description("Brief explanation of why this mapping was chosen")
   confidence Confidence
 }
@@ -83,8 +83,8 @@ class InterpretationMetadata {
   model string                  @description("Model that produced this result, e.g. 'openai/gpt-4o'")
   table_type_inference TableTypeInference @description("The table type from Step 1 and which mapping strategy was applied")
   field_mappings FieldMapping[] @description("One entry per canonical column, explaining how it was resolved")
-  sections_detected string[]?   @description("Section/group labels found in the text, if any (e.g. ['GERALDTON', 'KWINANA'])")
-  section_role string?          @description("'context' if a single section label applies to all rows, 'grouping' if multiple labels partition rows into groups")
+  sections_detected string[]?   @description("Section/group labels found in the text, if any (e.g. ['GROUP A', 'GROUP B'])")
+  section_role string?          @description("Role of section labels: 'context' or 'grouping'")
 }
 
 class MappedTable {
@@ -97,10 +97,10 @@ class MappedTable {
 // ─── Vision-based schema inference ──────────────────────────────────────────
 
 class InferredTableSchema {
-  column_names string[] @description("Column headers as they visually appear in the table, left to right. For stacked/multiline headers, combine the vertically stacked labels into a single name per column (e.g. 'Unique Slot Reference Number'). For hierarchical headers with spanning parents, use compound paths (e.g. 'Group A / Metric 1').")
+  column_names string[] @description("Column headers as they visually appear in the table, left to right. One entry per data column.")
   column_count int @description("Total number of data columns")
   header_levels int @description("Number of header rows (1 for single-row, >1 for stacked/multiline or hierarchical)")
-  has_spanning_headers bool @description("True if parent cells span multiple child columns (hierarchical). False if headers are just stacked text with no spanning (multiline flat).")
+  has_spanning_headers bool @description("True if parent cells span multiple child columns (hierarchical). False otherwise.")
   notes string? @description("Observations about the header structure: merged cells, stacked labels, spanning parent cells, visual groupings, etc.")
 }
 
@@ -134,12 +134,12 @@ function AnalyzeAndParseTable(compressed_text: string) -> ParsedTable {
 
     === TABLE TYPE CLASSIFICATION ===
 
-    - FlatHeader: Each column independent, even with stacked/multiline header text.
-      Header text may span multiple rows vertically but no cell spans horizontally.
-    - HierarchicalHeader: Parent cells SPAN HORIZONTALLY across multiple child columns.
-      Key sign: A header row has FEWER cells than data rows because parents span.
-    - PivotedTable: Row labels are categories, columns are time periods/attributes.
-    - TransposedTable: Field names as rows, records as columns.
+    Classify using the TableType enum definitions (provided in the output schema).
+    Quick decision tree:
+    - Header row has FEWER cells than data rows (horizontal spanning)? → HierarchicalHeader
+    - Column headers are repeated categories (dates, periods, attributes)? → PivotedTable
+    - Field names in left column, values across columns? → TransposedTable
+    - Otherwise → FlatHeader (including stacked/multiline headers with no spanning)
 
     === PARSING RULES ===
 
@@ -292,9 +292,9 @@ function MapToCanonicalSchema(parsed_table: ParsedTable, schema: CanonicalSchema
     TABLE TYPE: {{ parsed_table.table_type }}
 
     Mapping strategy by table type:
-    - FlatHeader: Map each data row directly to one output record. Columns align 1:1.
-    - HierarchicalHeader: Column names may be compound from merged headers (e.g. "Group A / Metric 1").
-      First, check if canonical column aliases match PARTS of compound names:
+    - FlatHeader: Map each data row directly to one output record.
+    - HierarchicalHeader: Check if canonical column aliases match PARTS of compound
+      column names (e.g. "Group A / Metric 1"):
       - If canonical columns have aliases that match the parent/child parts of compound headers
         (e.g., "group" aliases ["Group A", "Group B"] and "metric" aliases ["Metric 1", "Metric 2"]
         match parts of "Group A / Metric 1", "Group B / Metric 2"), you must UNPIVOT:
@@ -321,14 +321,12 @@ function MapToCanonicalSchema(parsed_table: ParsedTable, schema: CanonicalSchema
         Do NOT use the same value for all records — "Q1" columns produce "Q1", "Q2" columns produce "Q2".
       - If no canonical aliases match parts of compound headers, match the full compound name
         against aliases and produce one record per data row.
-    - PivotedTable: Categories are rows, time periods or attributes are columns. You must UNPIVOT:
-      for each data row, produce ONE OUTPUT RECORD PER VALUE COLUMN. The column header becomes
-      a field value (e.g. column "Period A" → the "period" field gets value "Period A").
+    - PivotedTable: UNPIVOT — for each data row, produce ONE OUTPUT RECORD PER VALUE COLUMN.
+      The column header becomes a field value (e.g. column "Period A" → the "period" field gets value "Period A").
       Example: a row "Item X | 100 | 200" with columns "Category | Period A | Period B"
       becomes TWO records: {category: "Item X", period: "Period A", value: 100} and
       {category: "Item X", period: "Period B", value: 200}.
-    - TransposedTable: Field names are in the FIRST COLUMN, values are in subsequent columns.
-      You must TRANSPOSE before mapping:
+    - TransposedTable: TRANSPOSE before mapping:
       1. The first column contains field names — these become your "headers" for alias matching
       2. Each subsequent column is ONE COMPLETE RECORD
       3. Match each row's first-column label against canonical column aliases
@@ -366,9 +364,7 @@ function MapToCanonicalSchema(parsed_table: ParsedTable, schema: CanonicalSchema
        metadata explaining:
        - Where the value came from (source)
        - Why this mapping was chosen (rationale)
-       - How confident you are (High = direct name/alias match,
-         Medium = inferred from context with reasonable certainty,
-         Low = best guess or ambiguous)
+       - How confident you are (see Confidence enum criteria)
     9. Set metadata.model to "{{ model_name }}" (it will be provided).
     10. If the text had section labels, list them in metadata.sections_detected and set
         metadata.section_role to:
@@ -401,52 +397,36 @@ function InterpretTable(compressed_text: string, schema: CanonicalSchema, model_
 
     DETECTING HEADER STRUCTURE:
 
-    Before classifying, examine the header rows carefully:
+    KEY TEST: Does a header row have FEWER cells than data rows because parent
+    cells span horizontally across multiple children?
+    - YES → HierarchicalHeader (use compound 'Parent / Child' names)
+    - NO → FlatHeader (even if header text is stacked across multiple rows —
+      combine stacked text into single column names)
 
-    1. STACKED/MULTILINE (→ FlatHeader):
-       - Each column has text that wraps across multiple rows vertically
-       - BUT each column is independent — no cell spans multiple columns horizontally
-       - Example: "Unique Slot" / "Reference" / "Number" stacked vertically = one column
-         named "Unique Slot Reference Number"
-       - Key sign: The number of text fragments per row equals the number of columns
-
-    2. GROUPED/SPANNING (→ HierarchicalHeader):
-       - A parent header cell spans HORIZONTALLY across multiple child columns
-       - Children are sibling columns that share a common parent cell above them
-       - Example: "Date" spanning over "Nominated" and "Accepted" = compound names
-         "Date / Nominated" and "Date / Accepted"
-       - Key sign: A header row has FEWER cells than the data rows because parents span
-
-    KEY TEST: Do sibling columns share a common parent cell above them that spans
-    horizontally? If YES → HierarchicalHeader. If NO → FlatHeader (even with multiline text).
+    See the TableType enum definitions in the output schema for full criteria.
 
     Steps:
     1. Identify the table structure using the header structure tests above and apply the
        appropriate mapping strategy:
-       - FlatHeader: Each column has its own independent header. This includes tables with
-         stacked/multiline headers where text is split across multiple rows but each column
-         stands alone — combine the stacked text into one column name. Map each row to one record.
-       - HierarchicalHeader: Parent header cells SPAN HORIZONTALLY across multiple child columns
-         in a tree structure (e.g. "Group A" spanning over "Metric 1" and "Metric 2" columns beneath it).
-         Column names are compound paths (e.g. "Group A / Metric 1").
-         IMPORTANT: Check if canonical column aliases match PARTS of compound headers. If so, UNPIVOT:
+       - FlatHeader: Combine stacked/multiline header text into single column names.
+         Map each row to one record.
+       - HierarchicalHeader: Column names are compound 'Parent / Child' paths.
+         Check if canonical column aliases match PARTS of compound headers. If so, UNPIVOT:
          each data row produces multiple records (one per value column), with parent/child parts
          becoming field values. CRITICAL: Only unpivot columns where ALL header parts match dimension
          aliases. Skip columns where any header part does NOT match aliases — this includes derived
          columns (e.g., "% change") AND aggregation columns (e.g., "Total", "TOTAL", "Subtotal").
          Also skip rows where the row label is an aggregation. Unless explicitly in aliases, skip it.
          If no aliases match parts, map each row to one record.
-         NOTE: Multiline/stacked headers with no horizontal spanning are FlatHeader, not this.
-       - PivotedTable: Categories as rows, time periods or attributes as columns. UNPIVOT:
-         for each data row, produce ONE RECORD PER VALUE COLUMN. The column header becomes
+       - PivotedTable: UNPIVOT — for each data row, produce ONE RECORD PER VALUE COLUMN. The column header becomes
          a field value. Example: "Item X | 100 | 200" with columns "Category | Period A | Period B"
          becomes TWO records: {category: "Item X", period: "Period A", value: 100} and
          {category: "Item X", period: "Period B", value: 200}.
-       - TransposedTable: Field names in FIRST COLUMN, values in subsequent columns. TRANSPOSE:
+       - TransposedTable: TRANSPOSE — each subsequent column (after the label column) is
+         ONE COMPLETE RECORD, each row provides one field.
          (1) First column labels become "headers" for alias matching
-         (2) Each subsequent column is ONE COMPLETE RECORD
-         (3) Match each row label against canonical column aliases
-         (4) Example: rows "Name | Alice | Bob" and "Status | Active | Inactive" →
+         (2) Match each row label against canonical column aliases
+         (3) Example: rows "Name | Alice | Bob" and "Status | Active | Inactive" →
              TWO records: {name: "Alice", status: "Active"}, {name: "Bob", status: "Inactive"}
     2. Extract all data rows (exclude headers and aggregation rows like totals).
     3. Match source columns to canonical columns using names, aliases, and descriptions.
@@ -472,9 +452,7 @@ function InterpretTable(compressed_text: string, schema: CanonicalSchema, model_
        metadata explaining:
        - Where the value came from (source)
        - Why this mapping was chosen (rationale)
-       - How confident you are (High = direct name/alias match,
-         Medium = inferred from context with reasonable certainty,
-         Low = best guess or ambiguous)
+       - How confident you are (see Confidence enum criteria)
     8. Set metadata.model to "{{ model_name }}" (it will be provided).
     9. If the text had section labels, list them in metadata.sections_detected and set
        metadata.section_role to:

@@ -46,6 +46,9 @@ type_map = {
     "types.MappedTable": types.MappedTable,
     "stream_types.MappedTable": stream_types.MappedTable,
 
+    "types.PageSection": types.PageSection,
+    "stream_types.PageSection": stream_types.PageSection,
+
     "types.ParsedTable": types.ParsedTable,
     "stream_types.ParsedTable": stream_types.ParsedTable,
 
@@ -55,6 +58,9 @@ type_map = {
     "types.Resume": types.Resume,
     "stream_types.Resume": stream_types.Resume,
 
+    "types.TableStructure": types.TableStructure,
+    "stream_types.TableStructure": stream_types.TableStructure,
+
     "types.TableTypeInference": types.TableTypeInference,
     "stream_types.TableTypeInference": stream_types.TableTypeInference,
 
@@ -62,6 +68,16 @@ type_map = {
     "types.AggregationType": types.AggregationType,
 
     "types.Confidence": types.Confidence,
+
+    "types.HeaderOrientation": types.HeaderOrientation,
+
+    "types.HeaderStructure": types.HeaderStructure,
+
+    "types.MultiRowPattern": types.MultiRowPattern,
+
+    "types.PageSectionType": types.PageSectionType,
+
+    "types.TableLayout": types.TableLayout,
 
     "types.TableType": types.TableType,
 

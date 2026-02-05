@@ -129,7 +129,7 @@ PageLayout (shared with spatial renderer)
 3. LLM table fallback ──► if no tables detected and refine_headers=True, ask GPT-4o-mini to find tables
   │
   ▼
-4. LLM header refinement ──► for each detected table (refine_headers=True), refine headers via GPT-4o-mini
+4. LLM header refinement ──► for each detected table (refine_headers=True), scan upward for preceding header rows then refine via GPT-4o-mini
   │
   ▼
 5. Multi-row merge ──► detect repeating row patterns (e.g., 3-row shipping records) and collapse
@@ -185,7 +185,7 @@ The compressor detects repeating span-count patterns (here `[5, 7, 5]`) and merg
 
 When `refine_headers=True` (the default), a lightweight LLM (GPT-4o-mini) improves compress output in two ways:
 
-**Always-on header refinement** — For every heuristic-detected table, the spatial text excerpt of the table region is sent to GPT-4o-mini along with the data column count. The LLM returns:
+**Always-on header refinement** — For every heuristic-detected table, the spatial text excerpt is sent to GPT-4o-mini along with the data column count. Before calling the LLM, the excerpt is expanded upward to include **preceding header rows** that sit above the table region. Header rows in complex documents (e.g., loading statements with 9 wrapped header rows) often have different span counts and alignments than data rows, so `_classify_regions` puts them in kv_pairs/scattered/heading regions rather than the table. `_find_preceding_header_rows` scans upward from the table's first row, collecting rows whose span positions align (within `render_tolerance`) with data column positions. Scanning stops at the first non-matching row, a gap > 2 rows, or a row belonging to another table region. The preceding rows are prepended to the excerpt but **not** removed from their original non-table region rendering (duplicate text is harmless — the interpret step reads the pipe table, not scattered text). The LLM returns:
 - Clean column names (combining multiline/stacked headers, using `"Parent / Child"` paths for hierarchical spanning headers)
 - The number of header rows to skip from the data grid
 

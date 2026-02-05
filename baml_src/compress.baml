@@ -4,19 +4,25 @@
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 class RefinedHeaders {
+  header_structure HeaderStructure
+    @description("Vertical organization of the column labels.")
   header_row_count int
-    @description("Number of rows at the top that are headers (not data). Count all rows containing column labels, units, or grouping text.")
+    @description("Number of rows occupied by column labels.")
   column_names string[]
-    @description("Clean column names, one per data column. Combine multiline/stacked text into single names. For hierarchical spanning headers, use 'Parent / Child' paths.")
+    @description("Clean column names, one per data column.")
   notes string?
-    @description("Observations: merged cells, stacked labels, spanning parents, missing headers, etc.")
+    @description("Observations: merged cells, spanning parents, missing headers, etc.")
 }
 
 class DetectedTable {
+  layout TableLayout
+    @description("Geometric arrangement of records and fields in the table.")
+  header_structure HeaderStructure
+    @description("Vertical organization of the column labels.")
   column_names string[]
-    @description("Column headers, one per data column")
+    @description("Column headers, one per data column.")
   data_rows string[][]
-    @description("Data rows excluding headers and aggregation/total rows. Each inner array has one cell value per column. Keep values as strings exactly as they appear. Use empty string for empty cells.")
+    @description("Data rows. Each inner array has one cell value per column.")
   notes string?
     @description("Observations: sections found, aggregation rows excluded, etc.")
 }
@@ -27,26 +33,24 @@ function RefineTableHeaders(spatial_excerpt: string, data_column_count: int) -> 
   client CustomGPT4oMini
   prompt #"
     You are a table-structure analyst. You receive a monospace spatial text excerpt
-    of a table region from a PDF. Your job is to identify the header rows and produce
-    clean column names.
+    of a table region from a PDF. Your job is to classify the header structure,
+    count header rows, and produce clean column names.
 
     SPATIAL TEXT (monospace — positions matter):
     {{ spatial_excerpt }}
 
     DATA COLUMN COUNT (from actual data rows): {{ data_column_count }}
 
-    INSTRUCTIONS:
-    1. The data rows (below the headers) have exactly {{ data_column_count }} columns.
-       Your column_names array MUST have exactly {{ data_column_count }} entries.
-    2. Identify which rows at the top are header rows (column labels, units, grouping
-       text) vs. data rows. Set header_row_count accordingly.
-    3. Produce clean, human-readable column names:
-       - If headers span multiple lines vertically (stacked text), combine them into
-         a single name (e.g., "Loading" over "Date" → "Loading Date").
-       - If headers are hierarchical with a parent spanning multiple child columns,
-         use "Parent / Child" format (e.g., "Region / North", "Region / South").
-       - If a column has no visible header, use a descriptive placeholder based on
-         the data values (e.g., "Column 1", "Value", "ID").
+    STEPS:
+    1. CLASSIFY: Determine header_structure using the HeaderStructure definitions
+       and KEY SIGNS in the output schema below.
+    2. COUNT: Set header_row_count — how many rows at the top contain column labels
+       (not data).
+    3. RESOLVE: Produce column_names (exactly {{ data_column_count }} entries):
+       - SingleRow: use each header cell directly as the column name.
+       - Stacked: concatenate fragments top-to-bottom at the same column position.
+       - Hierarchical: use "Parent / Child" compound paths.
+       - If a column has no visible header, use a descriptive placeholder.
     4. Read column positions carefully. The spatial layout shows where each header
        label is positioned — match them to the {{ data_column_count }} data columns.
 
@@ -59,23 +63,26 @@ function DetectAndStructureTable(spatial_text: string) -> DetectedTable {
   prompt #"
     You are a table-detection analyst. You receive the full monospace spatial text of
     a PDF page where automated heuristics found NO tables. Your job is to determine
-    if there IS a table on this page, and if so, extract it.
+    if there IS a table on this page, and if so, classify and extract it.
 
     SPATIAL TEXT (monospace — positions matter):
     {{ spatial_text }}
 
-    INSTRUCTIONS:
-    1. Look for tabular data: rows of values aligned in columns, with or without
-       visible headers, separators, or borders.
-    2. If you find a table:
-       - Extract clean column names (from headers if present, or inferred from data).
+    STEPS:
+    1. DETECT: Look for tabular data — rows of values aligned in columns, with or
+       without visible headers, separators, or borders.
+    2. CLASSIFY: If a table is found, determine layout and header_structure using the
+       enum definitions and KEY SIGNS in the output schema below.
+    3. EXTRACT:
+       - Produce clean column names using the structure-specific strategy:
+         SingleRow=direct, Stacked=concatenate, Hierarchical=compound paths.
        - Extract all data rows (exclude header rows and aggregation/total rows).
        - Each data row must have the same number of cells as column_names.
        - Use empty string "" for missing/empty cells.
        - Keep cell values as strings exactly as they appear.
-    3. If there is NO table on this page, return empty column_names [] and
-       empty data_rows [].
-    4. If the page contains non-table text (headings, paragraphs, metadata),
+    4. If there is NO table on this page, return layout=Standard,
+       header_structure=SingleRow, empty column_names [] and empty data_rows [].
+    5. If the page contains non-table text (headings, paragraphs, metadata),
        ignore it — only extract tabular content.
 
     {{ ctx.output_format }}

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from bisect import bisect_right
+from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -89,6 +90,16 @@ def _split_merged_spans(layout: PageLayout, min_gap: int = 5) -> PageLayout:
                     break
                 # Only split if this position is owned by a different row.
                 if ri not in col_to_rows[pos]:
+                    # Only split at word boundaries — never break mid-word.
+                    # A valid split point must have whitespace at or just
+                    # before the character index in the span text.
+                    char_idx = pos - col
+                    at_word_boundary = (
+                        (char_idx > 0 and text[char_idx - 1] == " ")
+                        or (char_idx < len(text) and text[char_idx] == " ")
+                    )
+                    if not at_word_boundary:
+                        continue
                     splits.append(pos)
 
             if not splits:
@@ -283,15 +294,19 @@ def _classify_regions(
     return regions
 
 
-def _is_numeric_value(text: str) -> bool:
-    """Return True if *text* looks like a numeric value (totals, subtotals).
+def _is_table_continuation(text: str) -> bool:
+    """Return True if a single-span row text looks like it belongs inside a table.
 
-    Strips commas, dots, whitespace, currency symbols, %, +/- and checks
-    whether the remainder is empty or all digits.  This catches values like
-    ``337,000``, ``$1,234.56``, ``+10.00%``, ``593,810``.
+    Matches numeric values (totals, subtotals like ``337,000``), empty rows,
+    and parenthesized annotations (unit labels like ``(tonnes)``, ``(MWh)``).
+    Returns False for section labels (``KWINANA``, ``GERALDTON``) that should
+    flush the current table run.
     """
     stripped = text.strip()
     if not stripped:
+        return True
+    # Parenthesized text is a unit annotation / header note, not a section label.
+    if stripped.startswith("(") and stripped.endswith(")"):
         return True
     for ch in " ,._$€£%+-":
         stripped = stripped.replace(ch, "")
@@ -352,7 +367,7 @@ def _detect_table_runs(
             # Single-span rows extend an existing run but don't start one.
             if current_run and ri - current_run[-1] <= 2:
                 text = (row_texts or {}).get(ri, "")
-                if _is_numeric_value(text):
+                if _is_table_continuation(text):
                     # Numeric value (likely subtotal/aggregate) — keep in table.
                     current_run.append(ri)
                 else:
@@ -472,6 +487,38 @@ def _merge_multi_row_records(
     return result
 
 
+def _estimate_header_rows(rows: list[list[tuple[int, str]]]) -> int:
+    """Estimate header row count using bottom-up span-count analysis.
+
+    Data rows dominate the bottom portion of any table. Find the most
+    common span counts there, then scan from the top to find the first
+    row matching a data pattern.
+    """
+    n = len(rows)
+    if n <= 2:
+        return 0
+
+    span_counts = [len(row) for row in rows]
+
+    # Bottom 2/3 establishes what data rows look like.
+    bottom_start = max(1, n // 3)
+    bottom_counts = span_counts[bottom_start:]
+
+    freq = Counter(bottom_counts)
+    # Top-3 most common span counts (minimum 2 spans to be data-like).
+    data_counts = {c for c, _ in freq.most_common(3) if c >= 2}
+
+    if not data_counts:
+        return 0
+
+    # Scan from top: first row with a data-like span count.
+    for i in range(n):
+        if span_counts[i] in data_counts:
+            return i
+
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Column unification (shared by markdown and TSV renderers)
 # ---------------------------------------------------------------------------
@@ -538,6 +585,101 @@ def _rows_to_grid(
                 cells[ci] = text
         grid.append(cells)
     return grid
+
+
+def _merge_twin_columns(
+    grid: list[list[str]],
+    num_cols: int,
+) -> tuple[list[list[str]], int]:
+    """Merge adjacent columns that are never simultaneously filled.
+
+    Two adjacent columns at different x-positions for the same logical
+    field produce a 'twin' pattern: one is filled when the other is empty.
+    Merging them recovers the true column count.
+
+    Returns (merged_grid, new_num_cols).
+    """
+    if num_cols <= 1 or not grid:
+        return grid, num_cols
+
+    # Build merge groups: adjacent columns that can combine.
+    groups: list[list[int]] = [[0]]
+    for j in range(1, num_cols):
+        current_group = groups[-1]
+        # Can column j merge into the current group?
+        conflict = False
+        for row in grid:
+            if row[j] and any(row[g] for g in current_group):
+                conflict = True
+                break
+        if not conflict:
+            current_group.append(j)
+        else:
+            groups.append([j])
+
+    new_num_cols = len(groups)
+    if new_num_cols == num_cols:
+        return grid, num_cols  # nothing to merge
+
+    # Build merged grid.
+    new_grid: list[list[str]] = []
+    for row in grid:
+        new_row: list[str] = []
+        for group in groups:
+            val = ""
+            for ci in group:
+                if row[ci]:
+                    val = row[ci] if not val else val + " " + row[ci]
+            new_row.append(val)
+        new_grid.append(new_row)
+
+    return new_grid, new_num_cols
+
+
+# ---------------------------------------------------------------------------
+# Preceding header row detection
+# ---------------------------------------------------------------------------
+
+def _find_preceding_header_rows(
+    layout: PageLayout,
+    table_start_row: int,
+    data_col_positions: list[int],
+    tolerance: int,
+    table_row_set: set[int] | None = None,
+) -> list[int]:
+    """Find rows above a table region that are likely header rows.
+
+    Scans upward from table_start_row. A row is a header candidate if
+    at least one of its span positions aligns (within tolerance) with
+    a data column position. Stops at the first non-matching row, a
+    gap > 2, or a row belonging to another table region.
+    """
+    all_rows = sorted(ri for ri in layout.rows if ri < table_start_row)
+
+    result: list[int] = []
+    for ri in reversed(all_rows):
+        # Don't cross into another table region.
+        if table_row_set and ri in table_row_set:
+            break
+
+        # Gap check.
+        ref = result[-1] if result else table_start_row
+        if ref - ri > 2:
+            break
+
+        entries = layout.rows[ri]
+        has_overlap = any(
+            any(abs(col - dc) <= tolerance for dc in data_col_positions)
+            for col, _ in entries
+        )
+
+        if has_overlap:
+            result.append(ri)
+        else:
+            break
+
+    result.reverse()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -698,30 +840,22 @@ def _render_detected_table_markdown(detected) -> str:
 
 
 def _render_table_markdown_with_headers(
-    rows: list[list[tuple[int, str]]],
-    col_tolerance: int,
-    refined_headers,
+    grid: list[list[str]],
+    column_names: list[str],
 ) -> str:
-    """Render table rows as a markdown pipe table using LLM-refined headers."""
-    if not rows:
+    """Render a pre-built data grid as markdown pipe table with given column names."""
+    if not grid:
         return ""
 
-    canonical, col_map = _unify_columns(rows, col_tolerance)
-    num_cols = len(canonical)
-    grid = _rows_to_grid(rows, num_cols, col_map)
-
-    # Use LLM header names, pad/truncate to match column count.
-    header_cells = list(refined_headers.column_names)
-    header_cells = (header_cells + [""] * num_cols)[:num_cols]
+    num_cols = len(grid[0])
+    header_cells = (list(column_names) + [""] * num_cols)[:num_cols]
 
     lines = [
         "|" + "|".join(header_cells) + "|",
         "|" + "|".join("---" for _ in header_cells) + "|",
     ]
 
-    # Skip header rows from data.
-    skip = refined_headers.header_row_count
-    for cells in grid[skip:]:
+    for cells in grid:
         lines.append("|" + "|".join(cells) + "|")
 
     return "\n".join(lines)
@@ -731,7 +865,17 @@ def _refine_headers_with_llm(spatial_excerpt: str, data_column_count: int):
     """Call LLM to refine table headers. Returns RefinedHeaders or None on failure."""
     try:
         from baml_client.sync_client import b as b_sync
-        return b_sync.RefineTableHeaders(spatial_excerpt, data_column_count)
+        refined = b_sync.RefineTableHeaders(spatial_excerpt, data_column_count)
+        logger.debug(
+            "LLM header refinement: structure=%s, header_rows=%d, columns=%d",
+            refined.header_structure.value, refined.header_row_count, len(refined.column_names),
+        )
+        if len(refined.column_names) != data_column_count:
+            logger.debug(
+                "LLM returned %d column names, expected %d",
+                len(refined.column_names), data_column_count,
+            )
+        return refined
     except Exception:
         logger.debug("LLM header refinement failed, falling back to heuristic", exc_info=True)
         return None
@@ -743,6 +887,11 @@ def _detect_table_with_llm(spatial_text: str):
         from baml_client.sync_client import b as b_sync
         result = b_sync.DetectAndStructureTable(spatial_text)
         if result.column_names:
+            logger.debug(
+                "LLM table detection: layout=%s, structure=%s, columns=%d, rows=%d",
+                result.layout.value, result.header_structure.value,
+                len(result.column_names), len(result.data_rows),
+            )
             return result
         return None
     except Exception:
@@ -802,6 +951,13 @@ def _compress_page(
     # === NORMAL PATH: render each region ===
     rendered_parts: list[str] = []
 
+    # Collect all table row indices for boundary detection when scanning
+    # for preceding header rows.
+    all_table_rows: set[int] = set()
+    for region in regions:
+        if region.type == RegionType.TABLE:
+            all_table_rows.update(region.row_indices)
+
     for region in regions:
         if region.type == RegionType.TABLE:
             table_rows = [sorted(region.rows[ri]) for ri in region.row_indices]
@@ -809,45 +965,63 @@ def _compress_page(
             render_tolerance = max(col_tolerance, round(10.0 / layout.cell_w))
 
             if refine_headers and table_format == "markdown":
-                # 1. Get column count from heuristic.
-                canonical, col_map = _unify_columns(table_rows, render_tolerance)
+                # 1. Detect multi-row pattern (also finds header boundary).
+                mr_header_count = None
+                period = 1
+                if merge_multi_row:
+                    span_counts = {ri: len(region.rows[ri]) for ri in region.row_indices}
+                    mr_result = _detect_multi_row_period(region, span_counts)
+                    if mr_result is not None:
+                        mr_header_count, period = mr_result
+
+                # 2. Determine header/data boundary.
+                header_count = (
+                    mr_header_count if mr_header_count is not None
+                    else _estimate_header_rows(table_rows)
+                )
+
+                # 3. Multi-row merge if applicable.
+                if period > 1:
+                    table_rows = _merge_multi_row_records(
+                        region, header_count, period
+                    )
+
+                # 4. Build columns from DATA rows only.
+                data_rows = table_rows[header_count:]
+                canonical, col_map = _unify_columns(data_rows, render_tolerance)
                 num_cols = len(canonical)
 
-                # 2. Get spatial text of this table region.
-                spatial_excerpt = _render_spatial_excerpt(layout, region.row_indices)
+                # 5. Grid data rows and merge twin columns.
+                grid = _rows_to_grid(data_rows, num_cols, col_map)
+                grid, num_cols = _merge_twin_columns(grid, num_cols)
 
-                # 3. LLM refines headers.
+                # 6. Find header rows above this table region.
+                preceding = _find_preceding_header_rows(
+                    layout, region.row_indices[0], canonical,
+                    render_tolerance, all_table_rows,
+                )
+
+                # 7. LLM refines headers with extended spatial context.
+                if preceding:
+                    logger.debug(
+                        "Found %d preceding header rows: %s",
+                        len(preceding), preceding,
+                    )
+                excerpt_rows = preceding + region.row_indices
+                spatial_excerpt = _render_spatial_excerpt(layout, excerpt_rows)
                 refined = _refine_headers_with_llm(spatial_excerpt, num_cols)
 
                 if refined is not None:
-                    # 4. Multi-row merge (using LLM's header_row_count).
-                    if merge_multi_row:
-                        span_counts = {ri: len(region.rows[ri]) for ri in region.row_indices}
-                        result = _detect_multi_row_period(region, span_counts)
-                        if result is not None:
-                            _hdr, period = result
-                            if period > 1:
-                                table_rows = _merge_multi_row_records(
-                                    region, refined.header_row_count, period
-                                )
-
-                    # 5. Render with LLM headers.
-                    rendered_parts.append(
-                        _render_table_markdown_with_headers(
-                            table_rows, render_tolerance, refined
+                    if refined.header_structure.value == "Hierarchical":
+                        logger.debug(
+                            "Hierarchical headers detected — compound names may need unpivoting downstream"
                         )
+                    # 8. Render with LLM names and data-derived grid.
+                    rendered_parts.append(
+                        _render_table_markdown_with_headers(grid, refined.column_names)
                     )
                 else:
-                    # LLM failed — fall back to heuristic rendering.
-                    if merge_multi_row:
-                        span_counts = {ri: len(region.rows[ri]) for ri in region.row_indices}
-                        result = _detect_multi_row_period(region, span_counts)
-                        if result is not None:
-                            header_rows, period = result
-                            if period > 1:
-                                table_rows = _merge_multi_row_records(
-                                    region, header_rows, period
-                                )
+                    # LLM failed — fall back to heuristic.
                     rendered_parts.append(
                         _render_table_markdown(table_rows, render_tolerance)
                     )
