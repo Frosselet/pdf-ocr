@@ -1071,7 +1071,9 @@ def _compress_page(
 
         else:
             # Filter out rows consumed as preceding table headers.
-            if preceding_header_rows:
+            # Keep HEADING regions intact — they are section labels
+            # (e.g. port names), not column header fragments.
+            if preceding_header_rows and region.type != RegionType.HEADING:
                 filtered = [ri for ri in region.row_indices
                             if ri not in preceding_header_rows]
                 if not filtered:
