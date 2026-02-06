@@ -187,6 +187,16 @@ def _classify_regions(
         if span_counts[ri] < 2:
             row_texts[ri] = " ".join(text for _, text in layout.rows[ri])
 
+    # Compute average span length per row to distinguish tables from flowing text.
+    # Tables have short spans (data values ~5-8 chars), text has long spans (~12+ chars).
+    avg_span_lens: dict[int, float] = {}
+    for ri in row_indices:
+        spans = layout.rows[ri]
+        if spans:
+            avg_span_lens[ri] = sum(len(t) for _, t in spans) / len(spans)
+        else:
+            avg_span_lens[ri] = 0.0
+
     regions: list[Region] = []
     used: set[int] = set()
 
@@ -194,6 +204,7 @@ def _classify_regions(
     table_runs = _detect_table_runs(
         row_indices, col_positions, span_counts, min_table_rows, col_tolerance,
         row_texts=row_texts,
+        avg_span_lens=avg_span_lens,
     )
     for run in table_runs:
         used.update(run)
@@ -320,6 +331,7 @@ def _detect_table_runs(
     min_table_rows: int,
     col_tolerance: int,
     row_texts: dict[int, str] | None = None,
+    avg_span_lens: dict[int, float] | None = None,
 ) -> list[list[int]]:
     """Find maximal runs of rows that form table regions.
 
@@ -327,6 +339,10 @@ def _detect_table_runs(
     joins the run if it shares 2+ anchors with the pool. This handles
     alternating row patterns (e.g., data rows with 7 columns interleaved
     with date rows with 5 columns that occupy a subset of positions).
+
+    Rows with high average span length (> 10 chars) are rejected as flowing
+    text rather than table data. Tables have short data values (~5-8 chars),
+    while flowing text has longer phrases (~12+ chars).
     """
     if len(row_indices) < min_table_rows:
         return []
@@ -362,6 +378,16 @@ def _detect_table_runs(
     for ri in row_indices:
         sc = span_counts[ri]
         cols = col_positions[ri]
+
+        # Reject rows that look like flowing text (long average span length).
+        # Tables have short data values (~5-8 chars), text has phrases (~12+ chars).
+        avg_len = (avg_span_lens or {}).get(ri, 0.0)
+        if avg_len > 10.0 and sc >= 2:
+            # This looks like flowing text, not table data. Flush any current run.
+            _flush_run()
+            current_run = []
+            pool = set()
+            continue
 
         if sc < 2:
             # Single-span rows extend an existing run but don't start one.
