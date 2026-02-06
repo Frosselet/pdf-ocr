@@ -766,6 +766,56 @@ def _find_preceding_header_rows(
 
 
 # ---------------------------------------------------------------------------
+# Horizontal table splitting
+# ---------------------------------------------------------------------------
+
+def _find_horizontal_gaps(
+    canonical: list[int],
+    min_gap: int = 40,
+) -> list[int]:
+    """Find large horizontal gaps in canonical column positions.
+
+    Returns a list of split indices. A gap between canonical[i] and
+    canonical[i+1] results in index i+1 being returned (where the right
+    side of the split starts).
+    """
+    if len(canonical) < 2:
+        return []
+
+    splits: list[int] = []
+    for i in range(len(canonical) - 1):
+        gap = canonical[i + 1] - canonical[i]
+        if gap >= min_gap:
+            splits.append(i + 1)
+
+    return splits
+
+
+def _split_grid_horizontally(
+    grid: list[list[str]],
+    splits: list[int],
+) -> list[list[list[str]]]:
+    """Split a grid into multiple sub-grids at the given column indices.
+
+    Returns a list of grids, one for each horizontal segment.
+    """
+    if not splits:
+        return [grid]
+
+    all_splits = [0] + splits + [len(grid[0]) if grid else 0]
+    result: list[list[list[str]]] = []
+
+    for i in range(len(all_splits) - 1):
+        start, end = all_splits[i], all_splits[i + 1]
+        sub_grid = [row[start:end] for row in grid]
+        # Only include non-empty sub-grids (at least one row with content)
+        if any(any(cell.strip() for cell in row) for row in sub_grid):
+            result.append(sub_grid)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Region renderers
 # ---------------------------------------------------------------------------
 
@@ -773,7 +823,13 @@ def _render_table_markdown(
     rows: list[list[tuple[int, str]]],
     col_tolerance: int = 3,
 ) -> str:
-    """Render table rows as a markdown pipe-delimited table."""
+    """Render table rows as a markdown pipe-delimited table.
+
+    If the table has large horizontal gaps (> 40 positions between columns),
+    it's split into separate tables. This handles side-by-side tables that
+    share the same y-coordinates but are logically separate (e.g., summary
+    tables placed next to each other at the bottom of a page).
+    """
     if not rows:
         return ""
 
@@ -781,6 +837,24 @@ def _render_table_markdown(
     num_cols = len(canonical)
     grid = _rows_to_grid(rows, num_cols, col_map)
 
+    # Check for horizontal gaps that indicate side-by-side tables.
+    splits = _find_horizontal_gaps(canonical, min_gap=40)
+    if splits:
+        sub_grids = _split_grid_horizontally(grid, splits)
+        if len(sub_grids) > 1:
+            # Render each sub-grid as a separate table.
+            tables: list[str] = []
+            for sub_grid in sub_grids:
+                table_lines: list[str] = []
+                for i, cells in enumerate(sub_grid):
+                    line = "|" + "|".join(cells) + "|"
+                    table_lines.append(line)
+                    if i == 0:
+                        table_lines.append("|" + "|".join("---" for _ in cells) + "|")
+                tables.append("\n".join(table_lines))
+            return "\n\n".join(tables)
+
+    # Single table (no splits).
     lines: list[str] = []
     for i, cells in enumerate(grid):
         line = "|" + "|".join(cells) + "|"
@@ -1149,47 +1223,57 @@ def _compress_page(
 
                 num_cols = len(canonical)
 
-                # 5. Grid ALL table rows (including misclassified "header" rows that
-                # may actually be data rows with more columns filled). Merge twin
-                # columns to handle adjacent never-simultaneously-filled columns.
-                all_grid = _rows_to_grid(table_rows, num_cols, col_map)
-                all_grid, num_cols = _merge_twin_columns(all_grid, num_cols)
-
-                # 6. Find header rows above this table region.
-                preceding = _find_preceding_header_rows(
-                    layout, region.row_indices[0], canonical,
-                    render_tolerance, all_table_rows,
-                )
-
-                # 7. LLM refines headers with extended spatial context.
-                if preceding:
+                # Check for horizontal gaps indicating side-by-side tables.
+                # These need splitting which isn't compatible with LLM header refinement.
+                horizontal_gaps = _find_horizontal_gaps(canonical, min_gap=40)
+                if horizontal_gaps:
                     logger.debug(
-                        "Found %d preceding header rows: %s",
-                        len(preceding), preceding,
+                        "Side-by-side tables detected (gaps at cols %s) — using split rendering",
+                        [canonical[g] for g in horizontal_gaps],
                     )
-                excerpt_rows = preceding + region.row_indices
-                spatial_excerpt = _render_spatial_excerpt(layout, excerpt_rows)
-                refined = _refine_headers_with_llm(spatial_excerpt, num_cols)
-
-                if refined is not None:
-                    if refined.header_structure.value == "Hierarchical":
-                        logger.debug(
-                            "Hierarchical headers detected — compound names may need unpivoting downstream"
-                        )
-                    # 8. Skip header rows from the grid using the heuristic count.
-                    # The LLM's header_row_count is unreliable for complex stacked
-                    # headers across preceding + table rows. Use the heuristic
-                    # header_count which was computed for the table region itself.
-                    grid = all_grid[header_count:]
-                    # 9. Render with LLM names and data grid.
-                    rendered_parts.append(
-                        _render_table_markdown_with_headers(grid, refined.column_names)
-                    )
+                    rendered_parts.append(_render_table_markdown(table_rows, render_tolerance))
                 else:
-                    # LLM failed — fall back to heuristic.
-                    rendered_parts.append(
-                        _render_table_markdown(table_rows, render_tolerance)
+                    # 5. Grid ALL table rows (including misclassified "header" rows that
+                    # may actually be data rows with more columns filled). Merge twin
+                    # columns to handle adjacent never-simultaneously-filled columns.
+                    all_grid = _rows_to_grid(table_rows, num_cols, col_map)
+                    all_grid, num_cols = _merge_twin_columns(all_grid, num_cols)
+
+                    # 6. Find header rows above this table region.
+                    preceding = _find_preceding_header_rows(
+                        layout, region.row_indices[0], canonical,
+                        render_tolerance, all_table_rows,
                     )
+
+                    # 7. LLM refines headers with extended spatial context.
+                    if preceding:
+                        logger.debug(
+                            "Found %d preceding header rows: %s",
+                            len(preceding), preceding,
+                        )
+                    excerpt_rows = preceding + region.row_indices
+                    spatial_excerpt = _render_spatial_excerpt(layout, excerpt_rows)
+                    refined = _refine_headers_with_llm(spatial_excerpt, num_cols)
+
+                    if refined is not None:
+                        if refined.header_structure.value == "Hierarchical":
+                            logger.debug(
+                                "Hierarchical headers detected — compound names may need unpivoting downstream"
+                            )
+                        # 8. Skip header rows from the grid using the heuristic count.
+                        # The LLM's header_row_count is unreliable for complex stacked
+                        # headers across preceding + table rows. Use the heuristic
+                        # header_count which was computed for the table region itself.
+                        grid = all_grid[header_count:]
+                        # 9. Render with LLM names and data grid.
+                        rendered_parts.append(
+                            _render_table_markdown_with_headers(grid, refined.column_names)
+                        )
+                    else:
+                        # LLM failed — fall back to heuristic.
+                        rendered_parts.append(
+                            _render_table_markdown(table_rows, render_tolerance)
+                        )
             else:
                 # Original path (no LLM or TSV format).
                 if merge_multi_row:

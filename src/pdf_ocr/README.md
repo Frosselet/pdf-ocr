@@ -221,6 +221,26 @@ When a table region is detected as transposed, the compressor **skips LLM header
 
 This avoids sending transposed tables to the LLM, which would incorrectly try to find column headers in the top rows and produce garbled output.
 
+### Side-by-Side Table Splitting
+
+Some PDFs place multiple tables horizontally adjacent on the same page — for example, a "Stock at Port" table next to an "Estimated Dates" table. These tables share the same y-coordinates but are logically separate.
+
+```
+┌────────────────────┬───────────┐   ┌──────────────────────┐
+│ Port │ Wheat │ Qty │   Total   │   │ Port │ Date Range    │
+├──────┼───────┼─────┼───────────┤   ├──────┼───────────────┤
+│ ALB  │ 53929 │ ... │   133,620 │   │ ALB  │ 1 - 15 Oct    │
+│ ESP  │ 17605 │ ... │    87,753 │   │ ESP  │ 1 - 16 Aug    │
+└──────┴───────┴─────┴───────────┘   └──────┴───────────────┘
+        Table 1                             Table 2
+```
+
+Without splitting, heuristics would merge these into a single wide table with many empty columns.
+
+`_find_horizontal_gaps()` detects **large gaps** (≥40 character positions) between adjacent canonical column positions. When gaps are found, the table is split at those points using `_split_grid_horizontally()`, and each sub-table is rendered as a separate markdown table.
+
+This detection happens **before LLM header refinement** — if horizontal gaps indicate side-by-side tables, the compressor skips the LLM path and uses the splitting render path directly. This ensures each table gets its own header row and separator.
+
 ### API
 
 ```python
