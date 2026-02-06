@@ -637,6 +637,54 @@ def _merge_twin_columns(
 
 
 # ---------------------------------------------------------------------------
+# Transposed table detection
+# ---------------------------------------------------------------------------
+
+def _is_transposed_table(
+    rows: list[list[tuple[int, str]]],
+    col_tolerance: int = 3,
+) -> bool:
+    """Detect if a table is transposed (field names as rows, records as columns).
+
+    Transposed tables have:
+    - Few columns (≤5) — one label column + 1-4 record columns
+    - Consistent span counts (low variance < 2.0)
+    - Stable first column (present in ≥80% of rows)
+
+    These heuristics work even when the table is fragmented into smaller
+    regions by the region detector.
+
+    Returns True if the structural pattern matches transposed layout.
+    """
+    if len(rows) < 3:
+        return False
+
+    # 1. Count unique column positions (using unification).
+    canonical, _ = _unify_columns(rows, col_tolerance)
+    num_cols = len(canonical)
+
+    if num_cols > 5:
+        return False  # Too many columns for transposed
+
+    # 2. Span count variance (consistency check).
+    # Transposed tables have very consistent structure (variance < 0.5 typically).
+    # Standard tables with varying row structures have higher variance.
+    span_counts = [len(row) for row in rows]
+    mean_spans = sum(span_counts) / len(span_counts)
+    variance = sum((c - mean_spans) ** 2 for c in span_counts) / len(span_counts)
+    if variance > 2.0:
+        return False  # Too variable, not a clean transposed structure
+
+    # 3. First column stability — transposed tables have field labels in col 0.
+    # Standard tables often have missing cells or variable first column positions.
+    first_col_count = sum(1 for row in rows if row and row[0][0] <= col_tolerance)
+    if first_col_count < len(rows) * 0.8:
+        return False  # First column not stable
+
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Preceding header row detection
 # ---------------------------------------------------------------------------
 
@@ -967,6 +1015,9 @@ def _compress_page(
             if region.type != RegionType.TABLE:
                 continue
             trows = [sorted(region.rows[ri]) for ri in region.row_indices]
+            # Skip transposed tables — they don't have header rows above.
+            if _is_transposed_table(trows, render_tol):
+                continue
             hc = None
             if merge_multi_row:
                 sc = {ri: len(region.rows[ri]) for ri in region.row_indices}
@@ -989,7 +1040,12 @@ def _compress_page(
             # Use wider tolerance for column unification in rendering.
             render_tolerance = max(col_tolerance, round(10.0 / layout.cell_w))
 
-            if refine_headers and table_format == "markdown":
+            # Detect transposed table structure.
+            is_transposed = _is_transposed_table(table_rows, render_tolerance)
+            if is_transposed:
+                logger.debug("Transposed table detected — skipping LLM header refinement")
+
+            if refine_headers and table_format == "markdown" and not is_transposed:
                 # 1. Detect multi-row pattern (also finds header boundary).
                 mr_header_count = None
                 period = 1

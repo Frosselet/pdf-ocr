@@ -197,6 +197,30 @@ Both LLM calls use `CustomGPT4oMini` defined in `baml_src/compress.baml`. Failur
 
 Setting `refine_headers=False` gives identical behavior to the pure-heuristic path: no LLM calls, no API key needed.
 
+### Transposed Table Detection
+
+Some PDFs use a **transposed layout** where field names are in the first column and data records are in subsequent columns — the transpose of a normal table. This is common in narrow page layouts (A4 portrait) where putting 20+ columns horizontally would require unreadable wrapped headers.
+
+```
+Normal table:              Transposed table:
+┌──────┬──────┬──────┐     ┌───────────────────┬───────────┬───────────┐
+│ Name │ Date │ Qty  │     │ Name              │ Alice     │ Bob       │
+├──────┼──────┼──────┤     │ Date              │ 2025-01-15│ 2025-01-16│
+│ Alice│ Jan  │ 100  │     │ Quantity          │ 100       │ 200       │
+│ Bob  │ Feb  │ 200  │     └───────────────────┴───────────┴───────────┘
+└──────┴──────┴──────┘
+```
+
+`_is_transposed_table()` detects this layout using structural heuristics:
+
+- **Few columns** (≤5) — one label column + 1-4 record columns
+- **Low span variance** (<2.0) — consistent row structure
+- **Stable first column** (≥80%) — field labels always present in column 0
+
+When a table region is detected as transposed, the compressor **skips LLM header refinement** — the first column already contains the field labels, so there's nothing to refine. The table is rendered as a pipe table preserving the transposed structure, and the downstream interpret step handles it via `TableType.TransposedTable`.
+
+This avoids sending transposed tables to the LLM, which would incorrectly try to find column headers in the top rows and produce garbled output.
+
 ### API
 
 ```python
