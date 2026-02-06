@@ -493,6 +493,12 @@ def _estimate_header_rows(rows: list[list[tuple[int, str]]]) -> int:
     Data rows dominate the bottom portion of any table. Find the most
     common span counts there, then scan from the top to find the first
     row matching a data pattern.
+
+    A row is data-like if:
+    - Its span count matches one of the common data span counts, OR
+    - Its span count is GREATER than the max common data count (meaning
+      it's a complete row with more columns filled, like a completed
+      shipment with Loading Status and Date/Time Loading Completed).
     """
     n = len(rows)
     if n <= 2:
@@ -511,9 +517,12 @@ def _estimate_header_rows(rows: list[list[tuple[int, str]]]) -> int:
     if not data_counts:
         return 0
 
+    max_data_count = max(data_counts)
+
     # Scan from top: first row with a data-like span count.
+    # A row with MORE spans than typical is still data (more complete).
     for i in range(n):
-        if span_counts[i] in data_counts:
+        if span_counts[i] in data_counts or span_counts[i] > max_data_count:
             return i
 
     return 0
@@ -1067,14 +1076,58 @@ def _compress_page(
                         region, header_count, period
                     )
 
-                # 4. Build columns from DATA rows only.
+                # 4. Build columns from DATA rows only (avoids phantom columns from
+                # header spans at different x-positions). But also extend with any
+                # rightmost columns from header rows — these may be real columns
+                # that are empty in most data rows (e.g., "Loading Completed" columns
+                # only filled for completed vessels).
                 data_rows = table_rows[header_count:]
                 canonical, col_map = _unify_columns(data_rows, render_tolerance)
+
+                # Extend with rightmost columns from header rows if they're beyond
+                # the rightmost data column.
+                if header_count > 0 and canonical:
+                    rightmost_data = canonical[-1]
+                    header_rows = table_rows[:header_count]
+                    for row in header_rows:
+                        for col, _ in row:
+                            if col > rightmost_data + render_tolerance:
+                                # Check if this position is already covered.
+                                already_mapped = any(
+                                    abs(col - c) <= render_tolerance for c in canonical
+                                )
+                                if not already_mapped:
+                                    canonical.append(col)
+                    canonical.sort()
+
+                # Rebuild col_map to cover ALL table rows (including headers),
+                # mapping each position to its nearest canonical column.
+                col_map = {}
+                for ci, c in enumerate(canonical):
+                    col_map[c] = ci
+                for row in table_rows:
+                    for col, _ in row:
+                        if col not in col_map:
+                            for ci, c in enumerate(canonical):
+                                if abs(col - c) <= render_tolerance:
+                                    col_map[col] = ci
+                                    break
+                            else:
+                                # Position not near any canonical column — map to
+                                # nearest one (may happen for header spans).
+                                nearest_ci = min(
+                                    range(len(canonical)),
+                                    key=lambda i: abs(canonical[i] - col),
+                                )
+                                col_map[col] = nearest_ci
+
                 num_cols = len(canonical)
 
-                # 5. Grid data rows and merge twin columns.
-                grid = _rows_to_grid(data_rows, num_cols, col_map)
-                grid, num_cols = _merge_twin_columns(grid, num_cols)
+                # 5. Grid ALL table rows (including misclassified "header" rows that
+                # may actually be data rows with more columns filled). Merge twin
+                # columns to handle adjacent never-simultaneously-filled columns.
+                all_grid = _rows_to_grid(table_rows, num_cols, col_map)
+                all_grid, num_cols = _merge_twin_columns(all_grid, num_cols)
 
                 # 6. Find header rows above this table region.
                 preceding = _find_preceding_header_rows(
@@ -1097,7 +1150,12 @@ def _compress_page(
                         logger.debug(
                             "Hierarchical headers detected — compound names may need unpivoting downstream"
                         )
-                    # 8. Render with LLM names and data-derived grid.
+                    # 8. Skip header rows from the grid using the heuristic count.
+                    # The LLM's header_row_count is unreliable for complex stacked
+                    # headers across preceding + table rows. Use the heuristic
+                    # header_count which was computed for the table region itself.
+                    grid = all_grid[header_count:]
+                    # 9. Render with LLM names and data grid.
                     rendered_parts.append(
                         _render_table_markdown_with_headers(grid, refined.column_names)
                     )
