@@ -80,3 +80,17 @@ Exploratory notebook demonstrating PDF parsing approaches and the spatial text r
 - **Domain-agnostic descriptions and examples**: ALL text that reaches the LLM — `@description()` annotations, prompt templates, and inline examples — MUST use generic, domain-neutral language. Use abstract structural terms (e.g., "category labels", "entity names", "measure values", "Item X", "Period A") rather than domain-specific terminology (e.g., "port names", "vessel names", "tonnage", "Wheat", "Oct 2025"). This applies equally to enum value descriptions, class field descriptions, KEY SIGNS lists, and prompt examples. Domain-specific language biases the model toward particular document types and causes misclassification on other domains.
 
 - **Keep descriptions and README in sync**: The `TableType` enum descriptions in `interpret.baml` must match the table in `src/pdf_ocr/README.md` under "Table Types and Mapping Strategies". When updating one, update the other.
+
+## Testing Guidelines
+
+- **Rigorous, not superficial**: Don't just check that code runs or that output "looks right". Verify actual content accuracy — column names must match the source PDF exactly, data values must be in correct columns, order must be preserved.
+
+- **Compare against source**: For compress/header refinement changes, compare LLM output against the actual PDF. Open the PDF, read the header text, and verify the output matches character-for-character.
+
+- **Test the hard cases**: Bunge has 9 wrapped header rows with complex stacking. 2857439 has hierarchical headers. CBH has side-by-side tables. Queensland has transposed layout. These are the real tests — not whether simple cases work.
+
+- **Verify column count and order**: Count columns in the source PDF header. Count columns in the output. They must match. Verify column order matches left-to-right reading order in the PDF.
+
+- **No hallucination tolerance**: If the LLM produces column names that don't exist in the PDF, or merges/splits columns incorrectly, that's a failure. The goal is faithful reproduction, not creative interpretation.
+
+- **Document expected outputs**: For key test PDFs, document what the correct output should be (column names, column count, data row count) so regressions are immediately visible.

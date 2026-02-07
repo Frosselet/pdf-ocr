@@ -43,6 +43,49 @@ class Region:
 
 
 # ---------------------------------------------------------------------------
+# Relative metrics — avoid brittle absolute thresholds
+# ---------------------------------------------------------------------------
+
+def _compute_col_tolerance(cell_w: float) -> int:
+    """Compute column tolerance relative to cell width.
+
+    Column tolerance determines when two x-positions are "the same column".
+    We use max(3, cell_w * 1.5) to ensure:
+    - Minimum of 3 for very small fonts (prevents over-fragmentation)
+    - Scales with cell width for larger fonts
+    """
+    return max(3, round(cell_w * 1.5))
+
+
+def _compute_median_span_len(rows: list[list[tuple[int, str]]]) -> float:
+    """Compute median span length across all spans in the rows."""
+    all_lengths = []
+    for row in rows:
+        for _, text in row:
+            all_lengths.append(len(text))
+    if not all_lengths:
+        return 5.0  # fallback
+    all_lengths.sort()
+    mid = len(all_lengths) // 2
+    return float(all_lengths[mid])
+
+
+def _compute_median_column_gap(canonical: list[int]) -> float:
+    """Compute median gap between adjacent canonical column positions."""
+    if len(canonical) < 2:
+        return 20.0  # fallback
+    gaps = [canonical[i + 1] - canonical[i] for i in range(len(canonical) - 1)]
+    gaps.sort()
+    mid = len(gaps) // 2
+    return float(gaps[mid])
+
+
+def _is_outlier_gap(gap: float, median_gap: float, threshold_multiplier: float = 3.0) -> bool:
+    """Check if a gap is an outlier (significantly larger than typical)."""
+    return gap > median_gap * threshold_multiplier
+
+
+# ---------------------------------------------------------------------------
 # Span splitting — fix PDF-level merged cells
 # ---------------------------------------------------------------------------
 
@@ -340,12 +383,20 @@ def _detect_table_runs(
     alternating row patterns (e.g., data rows with 7 columns interleaved
     with date rows with 5 columns that occupy a subset of positions).
 
-    Rows with high average span length (> 10 chars) are rejected as flowing
-    text rather than table data. Tables have short data values (~5-8 chars),
-    while flowing text has longer phrases (~12+ chars).
+    Flowing text rejection uses RELATIVE thresholds: a row is rejected if
+    its avg span length is > 2x the median span length AND its spans don't
+    align consistently with the column pool.
     """
     if len(row_indices) < min_table_rows:
         return []
+
+    # Compute median span length for relative threshold.
+    all_span_lens = []
+    if avg_span_lens:
+        for ri in row_indices:
+            if ri in avg_span_lens and span_counts.get(ri, 0) >= 2:
+                all_span_lens.append(avg_span_lens[ri])
+    median_span_len = sorted(all_span_lens)[len(all_span_lens) // 2] if all_span_lens else 8.0
 
     runs: list[list[int]] = []
     current_run: list[int] = []
@@ -387,11 +438,10 @@ def _detect_table_runs(
         cols = col_positions[ri]
 
         # Reject rows that look like flowing text (long average span length).
-        # Tables have short data values (~5-8 chars), text has phrases (~12+ chars).
-        # Threshold of 12.0 allows table data with slightly longer values (e.g., names)
-        # while rejecting paragraph text with avg span lengths of 15+.
+        # Use RELATIVE threshold: reject if avg_len > 2x median span length.
+        # This adapts to different documents rather than using fixed cutoffs.
         avg_len = (avg_span_lens or {}).get(ri, 0.0)
-        if avg_len > 12.0 and sc >= 2:
+        if avg_len > median_span_len * 2.0 and sc >= 2:
             # This looks like flowing text, not table data. Flush any current run.
             _flush_run()
             current_run = []
@@ -550,8 +600,10 @@ def _estimate_header_rows(rows: list[list[tuple[int, str]]]) -> int:
     bottom_counts = span_counts[bottom_start:]
 
     freq = Counter(bottom_counts)
-    # Top-3 most common span counts (minimum 2 spans to be data-like).
-    data_counts = {c for c, _ in freq.most_common(3) if c >= 2}
+    # Top-3 most common span counts. Requirements:
+    # - span count >= 2 (single-span rows aren't data)
+    # - frequency >= 2 (pattern must repeat to be characteristic of data)
+    data_counts = {c for c, count in freq.most_common(3) if c >= 2 and count >= 2}
 
     if not data_counts:
         return 0
@@ -565,6 +617,60 @@ def _estimate_header_rows(rows: list[list[tuple[int, str]]]) -> int:
             return i
 
     return 0
+
+
+def _build_stacked_headers(
+    header_rows: list[list[tuple[int, str]]],
+    canonical: list[int],
+    col_tolerance: int,
+) -> list[str]:
+    """Build column names from stacked header rows using column alignment.
+
+    For each canonical column position, finds all header text fragments
+    that align with it across header rows, then concatenates them vertically
+    (top to bottom) with spaces.
+
+    This is deterministic and more reliable than LLM parsing for complex
+    stacked headers.
+    """
+    if not header_rows or not canonical:
+        return []
+
+    num_cols = len(canonical)
+    # For each column, collect aligned header fragments in row order.
+    col_fragments: list[list[str]] = [[] for _ in range(num_cols)]
+
+    for row in header_rows:
+        # Track which columns got text in this row.
+        row_assignments: dict[int, str] = {}
+        for col_pos, text in row:
+            # Find the canonical column this position maps to.
+            best_ci = None
+            best_dist = float('inf')
+            for ci, can_pos in enumerate(canonical):
+                dist = abs(col_pos - can_pos)
+                if dist <= col_tolerance and dist < best_dist:
+                    best_ci = ci
+                    best_dist = dist
+            if best_ci is not None:
+                # If multiple spans map to same column, join with space.
+                if best_ci in row_assignments:
+                    row_assignments[best_ci] += " " + text
+                else:
+                    row_assignments[best_ci] = text
+
+        # Add this row's text to each column.
+        for ci in range(num_cols):
+            if ci in row_assignments:
+                col_fragments[ci].append(row_assignments[ci])
+
+    # Build final column names by joining fragments.
+    column_names = []
+    for fragments in col_fragments:
+        name = " ".join(fragments).strip()
+        column_names.append(name)
+
+    return column_names
 
 
 # ---------------------------------------------------------------------------
@@ -784,9 +890,13 @@ def _find_preceding_header_rows(
 
 def _find_horizontal_gaps(
     canonical: list[int],
-    min_gap: int = 40,
+    gap_multiplier: float = 3.0,
 ) -> list[int]:
     """Find large horizontal gaps in canonical column positions.
+
+    Uses relative gap detection: a gap is significant if it's > gap_multiplier
+    times the median inter-column gap. This adapts to different font sizes
+    and document formats.
 
     Returns a list of split indices. A gap between canonical[i] and
     canonical[i+1] results in index i+1 being returned (where the right
@@ -795,10 +905,12 @@ def _find_horizontal_gaps(
     if len(canonical) < 2:
         return []
 
+    median_gap = _compute_median_column_gap(canonical)
+
     splits: list[int] = []
     for i in range(len(canonical) - 1):
         gap = canonical[i + 1] - canonical[i]
-        if gap >= min_gap:
+        if _is_outlier_gap(gap, median_gap, gap_multiplier):
             splits.append(i + 1)
 
     return splits
@@ -851,7 +963,7 @@ def _render_table_markdown(
     grid = _rows_to_grid(rows, num_cols, col_map)
 
     # Check for horizontal gaps that indicate side-by-side tables.
-    splits = _find_horizontal_gaps(canonical, min_gap=40)
+    splits = _find_horizontal_gaps(canonical)
     if splits:
         sub_grids = _split_grid_horizontally(grid, splits)
         if len(sub_grids) > 1:
@@ -1089,7 +1201,8 @@ def _compress_page(
     # Split spans that the PDF merged across column boundaries.
     layout = _split_merged_spans(layout)
 
-    col_tolerance = 3
+    # Use relative column tolerance based on cell width.
+    col_tolerance = _compute_col_tolerance(layout.cell_w)
     regions = _classify_regions(layout, min_table_rows, col_tolerance)
 
     if not regions:
@@ -1238,7 +1351,7 @@ def _compress_page(
 
                 # Check for horizontal gaps indicating side-by-side tables.
                 # These need splitting which isn't compatible with LLM header refinement.
-                horizontal_gaps = _find_horizontal_gaps(canonical, min_gap=40)
+                horizontal_gaps = _find_horizontal_gaps(canonical)
                 if horizontal_gaps:
                     logger.debug(
                         "Side-by-side tables detected (gaps at cols %s) — using split rendering",
