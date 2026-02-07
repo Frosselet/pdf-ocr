@@ -352,15 +352,22 @@ def _detect_table_runs(
     # Pool of all unique column anchors in the current run.
     pool: set[int] = set()
 
-    def _pool_overlap(cols: list[int]) -> int:
-        """Count how many of cols match something in the pool."""
+    def _pool_overlap(cols: list[int]) -> tuple[int, float]:
+        """Count how many of cols match something in the pool.
+
+        Returns (overlap_count, overlap_ratio) where ratio is what fraction
+        of the row's columns are accounted for by the pool. A row with empty
+        cells may have fewer columns but still belong to the table if most
+        of its columns fit within the established structure.
+        """
         count = 0
         for c in cols:
             for p in pool:
                 if abs(c - p) <= col_tolerance:
                     count += 1
                     break
-        return count
+        ratio = count / len(cols) if cols else 0.0
+        return count, ratio
 
     def _add_to_pool(cols: list[int]) -> None:
         """Add column positions to the pool, merging near-duplicates."""
@@ -381,9 +388,10 @@ def _detect_table_runs(
 
         # Reject rows that look like flowing text (long average span length).
         # Tables have short data values (~5-8 chars), text has phrases (~12+ chars).
-        # But high span counts (>= 10) are almost certainly tables regardless of length.
+        # Threshold of 12.0 allows table data with slightly longer values (e.g., names)
+        # while rejecting paragraph text with avg span lengths of 15+.
         avg_len = (avg_span_lens or {}).get(ri, 0.0)
-        if avg_len > 10.0 and 2 <= sc < 10:
+        if avg_len > 12.0 and sc >= 2:
             # This looks like flowing text, not table data. Flush any current run.
             _flush_run()
             current_run = []
@@ -411,9 +419,13 @@ def _detect_table_runs(
             continue
 
         gap = ri - current_run[-1]
-        overlap = _pool_overlap(cols)
+        overlap_count, overlap_ratio = _pool_overlap(cols)
 
-        if overlap >= 2 and gap <= 2:
+        # Row belongs to the table if:
+        # 1. Reasonable row gap (adjacent or near-adjacent)
+        # 2. Either: at least 2 columns overlap, OR most columns (>= 60%) fit
+        #    the established structure (handles rows with empty cells)
+        if gap <= 2 and (overlap_count >= 2 or overlap_ratio >= 0.6):
             current_run.append(ri)
             _add_to_pool(cols)
         else:
