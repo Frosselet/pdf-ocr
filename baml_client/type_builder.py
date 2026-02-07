@@ -20,7 +20,7 @@ from .globals import DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_RUNTIM
 class TypeBuilder(type_builder.TypeBuilder):
     def __init__(self):
         super().__init__(classes=set(
-          ["AggregationInfo","CanonicalSchema","ColumnDef","DetectedTable","FieldMapping","HeaderInfo","InferredTableSchema","InterpretationMetadata","MappedRecord","MappedTable","PageSection","ParsedTable","RefinedHeaders","Resume","TableStructure","TableTypeInference",]
+          ["AggregationInfo","CanonicalSchema","ColumnDef","DetectedTable","FieldMapping","HeaderInfo","InferredTableSchema","InterpretationMetadata","MappedRecord","MappedTable","PageSection","ParsedTable","Resume","TableStructure","TableTypeInference",]
         ), enums=set(
           ["AggregationType","Confidence","HeaderOrientation","HeaderStructure","MultiRowPattern","PageSectionType","TableLayout","TableType",]
         ), runtime=DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_RUNTIME)
@@ -63,7 +63,7 @@ class TypeBuilder(type_builder.TypeBuilder):
 
 
     # #########################################################################
-    # Generated classes 16
+    # Generated classes 15
     # #########################################################################
 
     @property
@@ -113,10 +113,6 @@ class TypeBuilder(type_builder.TypeBuilder):
     @property
     def ParsedTable(self) -> "ParsedTableViewer":
         return ParsedTableViewer(self)
-
-    @property
-    def RefinedHeaders(self) -> "RefinedHeadersViewer":
-        return RefinedHeadersViewer(self)
 
     @property
     def Resume(self) -> "ResumeViewer":
@@ -538,7 +534,7 @@ class TableTypeValues:
 
 
 # #########################################################################
-# Generated classes 16
+# Generated classes 15
 # #########################################################################
 
 class AggregationInfoAst:
@@ -1142,57 +1138,6 @@ class ParsedTableProperties:
     @property
     def data_rows(self) -> type_builder.ClassPropertyViewer:
         return type_builder.ClassPropertyViewer(self.__bldr.property("data_rows"))
-    
-    @property
-    def notes(self) -> type_builder.ClassPropertyViewer:
-        return type_builder.ClassPropertyViewer(self.__bldr.property("notes"))
-    
-    
-
-
-class RefinedHeadersAst:
-    def __init__(self, tb: type_builder.TypeBuilder):
-        _tb = tb._tb # type: ignore (we know how to use this private attribute)
-        self._bldr = _tb.class_("RefinedHeaders")
-        self._properties: typing.Set[str] = set([  "header_structure",  "header_row_count",  "column_names",  "notes",  ])
-        self._props = RefinedHeadersProperties(self._bldr, self._properties)
-
-    def type(self) -> baml_py.FieldType:
-        return self._bldr.field()
-
-    @property
-    def props(self) -> "RefinedHeadersProperties":
-        return self._props
-
-
-class RefinedHeadersViewer(RefinedHeadersAst):
-    def __init__(self, tb: type_builder.TypeBuilder):
-        super().__init__(tb)
-
-    
-    def list_properties(self) -> typing.List[typing.Tuple[str, type_builder.ClassPropertyViewer]]:
-        return [(name, type_builder.ClassPropertyViewer(self._bldr.property(name))) for name in self._properties]
-    
-
-
-class RefinedHeadersProperties:
-    def __init__(self, bldr: baml_py.ClassBuilder, properties: typing.Set[str]):
-        self.__bldr = bldr
-        self.__properties = properties # type: ignore (we know how to use this private attribute) # noqa: F821
-
-    
-    
-    @property
-    def header_structure(self) -> type_builder.ClassPropertyViewer:
-        return type_builder.ClassPropertyViewer(self.__bldr.property("header_structure"))
-    
-    @property
-    def header_row_count(self) -> type_builder.ClassPropertyViewer:
-        return type_builder.ClassPropertyViewer(self.__bldr.property("header_row_count"))
-    
-    @property
-    def column_names(self) -> type_builder.ClassPropertyViewer:
-        return type_builder.ClassPropertyViewer(self.__bldr.property("column_names"))
     
     @property
     def notes(self) -> type_builder.ClassPropertyViewer:

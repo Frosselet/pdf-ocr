@@ -52,9 +52,6 @@ type_map = {
     "types.ParsedTable": types.ParsedTable,
     "stream_types.ParsedTable": stream_types.ParsedTable,
 
-    "types.RefinedHeaders": types.RefinedHeaders,
-    "stream_types.RefinedHeaders": stream_types.RefinedHeaders,
-
     "types.Resume": types.Resume,
     "stream_types.Resume": stream_types.Resume,
 

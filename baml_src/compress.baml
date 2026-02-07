@@ -1,18 +1,7 @@
-// Compress pipeline: LLM-assisted header refinement and table detection fallback
-// for the spatial text compressor.
+// Compress pipeline: LLM table detection fallback for the spatial text compressor.
+// Header refinement is now handled deterministically by _build_stacked_headers().
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-
-class RefinedHeaders {
-  header_structure HeaderStructure
-    @description("Vertical organization of the column labels.")
-  header_row_count int
-    @description("Number of rows occupied by column labels.")
-  column_names string[]
-    @description("Clean column names, one per data column.")
-  notes string?
-    @description("Observations: merged cells, spanning parents, missing headers, etc.")
-}
 
 class DetectedTable {
   layout TableLayout
@@ -28,42 +17,6 @@ class DetectedTable {
 }
 
 // ─── Functions ──────────────────────────────────────────────────────────────
-
-function RefineTableHeaders(spatial_excerpt: string, data_column_count: int) -> RefinedHeaders {
-  client CustomGPT4oMini
-  prompt #"
-    You are a table-structure analyst. You receive a monospace spatial text excerpt
-    of a table region from a PDF. Your job is to classify the header structure,
-    count header rows, and produce clean column names.
-
-    SPATIAL TEXT (monospace — positions matter):
-    {{ spatial_excerpt }}
-
-    DATA COLUMN COUNT (from actual data rows): {{ data_column_count }}
-
-    STEPS:
-    1. CLASSIFY: Determine header_structure using the HeaderStructure definitions
-       and KEY SIGNS in the output schema below.
-    2. COUNT: Set header_row_count — how many rows at the top contain column labels
-       (not data).
-    3. RESOLVE: Produce column_names (exactly {{ data_column_count }} entries):
-       - SingleRow: use each header cell directly as the column name.
-       - Stacked: concatenate fragments top-to-bottom at the same column position,
-         using EXACT original text. Join with single space. Do NOT rephrase,
-         abbreviate, or interpret — just flatten the wrapped text verbatim.
-         Example: "DATE AT WHICH" + "NOMINATION" + "WAS RECEIVED"
-         → "DATE AT WHICH NOMINATION WAS RECEIVED" (not "Nomination Date")
-       - Hierarchical: use "Parent / Child" compound paths with exact original text.
-       - If a column has no visible header, use empty string "".
-    4. Read column positions carefully. The spatial layout shows where each header
-       label is positioned — match them to the {{ data_column_count }} data columns.
-
-    CRITICAL: Preserve the original text exactly. Do not rename, rephrase, or
-    "clean up" column names. The goal is to flatten wrapped headers, not interpret them.
-
-    {{ ctx.output_format }}
-  "#
-}
 
 function DetectAndStructureTable(spatial_text: string) -> DetectedTable {
   client CustomGPT4oMini

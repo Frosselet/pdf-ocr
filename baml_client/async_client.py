@@ -187,21 +187,6 @@ class BamlAsyncClient:
                 "parsed_table": parsed_table,"schema": schema,"model_name": model_name,
             })
             return typing.cast(types.MappedTable, __result__.cast_to(types, types, stream_types, False, __runtime__))
-    async def RefineTableHeaders(self, spatial_excerpt: str,data_column_count: int,
-        baml_options: BamlCallOptions = {},
-    ) -> types.RefinedHeaders:
-        # Check if on_tick is provided
-        if 'on_tick' in baml_options:
-            # Use streaming internally when on_tick is provided
-            __stream__ = self.stream.RefineTableHeaders(spatial_excerpt=spatial_excerpt,data_column_count=data_column_count,
-                baml_options=baml_options)
-            return await __stream__.get_final_response()
-        else:
-            # Original non-streaming code
-            __result__ = await self.__options.merge_options(baml_options).call_function_async(function_name="RefineTableHeaders", args={
-                "spatial_excerpt": spatial_excerpt,"data_column_count": data_column_count,
-            })
-            return typing.cast(types.RefinedHeaders, __result__.cast_to(types, types, stream_types, False, __runtime__))
     
 
 
@@ -295,18 +280,6 @@ class BamlStreamClient:
           lambda x: typing.cast(types.MappedTable, x.cast_to(types, types, stream_types, False, __runtime__)),
           __ctx__,
         )
-    def RefineTableHeaders(self, spatial_excerpt: str,data_column_count: int,
-        baml_options: BamlCallOptions = {},
-    ) -> baml_py.BamlStream[stream_types.RefinedHeaders, types.RefinedHeaders]:
-        __ctx__, __result__ = self.__options.merge_options(baml_options).create_async_stream(function_name="RefineTableHeaders", args={
-            "spatial_excerpt": spatial_excerpt,"data_column_count": data_column_count,
-        })
-        return baml_py.BamlStream[stream_types.RefinedHeaders, types.RefinedHeaders](
-          __result__,
-          lambda x: typing.cast(stream_types.RefinedHeaders, x.cast_to(types, types, stream_types, True, __runtime__)),
-          lambda x: typing.cast(types.RefinedHeaders, x.cast_to(types, types, stream_types, False, __runtime__)),
-          __ctx__,
-        )
     
 
 class BamlHttpRequestClient:
@@ -364,13 +337,6 @@ class BamlHttpRequestClient:
             "parsed_table": parsed_table,"schema": schema,"model_name": model_name,
         }, mode="request")
         return __result__
-    async def RefineTableHeaders(self, spatial_excerpt: str,data_column_count: int,
-        baml_options: BamlCallOptions = {},
-    ) -> baml_py.baml_py.HTTPRequest:
-        __result__ = await self.__options.merge_options(baml_options).create_http_request_async(function_name="RefineTableHeaders", args={
-            "spatial_excerpt": spatial_excerpt,"data_column_count": data_column_count,
-        }, mode="request")
-        return __result__
     
 
 class BamlHttpStreamRequestClient:
@@ -426,13 +392,6 @@ class BamlHttpStreamRequestClient:
     ) -> baml_py.baml_py.HTTPRequest:
         __result__ = await self.__options.merge_options(baml_options).create_http_request_async(function_name="MapToCanonicalSchema", args={
             "parsed_table": parsed_table,"schema": schema,"model_name": model_name,
-        }, mode="stream")
-        return __result__
-    async def RefineTableHeaders(self, spatial_excerpt: str,data_column_count: int,
-        baml_options: BamlCallOptions = {},
-    ) -> baml_py.baml_py.HTTPRequest:
-        __result__ = await self.__options.merge_options(baml_options).create_http_request_async(function_name="RefineTableHeaders", args={
-            "spatial_excerpt": spatial_excerpt,"data_column_count": data_column_count,
         }, mode="stream")
         return __result__
     

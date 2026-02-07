@@ -57,19 +57,6 @@ def _compute_col_tolerance(cell_w: float) -> int:
     return max(3, round(cell_w * 1.5))
 
 
-def _compute_median_span_len(rows: list[list[tuple[int, str]]]) -> float:
-    """Compute median span length across all spans in the rows."""
-    all_lengths = []
-    for row in rows:
-        for _, text in row:
-            all_lengths.append(len(text))
-    if not all_lengths:
-        return 5.0  # fallback
-    all_lengths.sort()
-    mid = len(all_lengths) // 2
-    return float(all_lengths[mid])
-
-
 def _compute_median_column_gap(canonical: list[int]) -> float:
     """Compute median gap between adjacent canonical column positions."""
     if len(canonical) < 2:
@@ -183,21 +170,6 @@ def _split_merged_spans(layout: PageLayout, min_gap: int = 5) -> PageLayout:
 def _row_column_positions(row: list[tuple[int, str]]) -> list[int]:
     """Return sorted column start positions for spans in a row."""
     return sorted(col for col, _text in row)
-
-
-def _anchors_overlap(
-    cols_a: tuple[int, ...] | list[int],
-    cols_b: tuple[int, ...] | list[int],
-    tolerance: int,
-) -> int:
-    """Count how many column anchors overlap within tolerance."""
-    count = 0
-    for a in cols_a:
-        for b in cols_b:
-            if abs(a - b) <= tolerance:
-                count += 1
-                break
-    return count
 
 
 # ---------------------------------------------------------------------------
@@ -1155,25 +1127,6 @@ def _render_scattered(region: Region) -> str:
 # LLM-assisted helpers
 # ---------------------------------------------------------------------------
 
-def _render_spatial_excerpt(layout: PageLayout, row_indices: list[int]) -> str:
-    """Render specific rows from a PageLayout as monospace spatial text."""
-    lines: list[str] = []
-    for row_idx in row_indices:
-        if row_idx not in layout.rows:
-            lines.append("")
-            continue
-        entries = layout.rows[row_idx]
-        max_end = max(col + len(text) for col, text in entries)
-        buf = [" "] * max_end
-        for col, text in entries:
-            for i, ch in enumerate(text):
-                pos = col + i
-                if pos < len(buf):
-                    buf[pos] = ch
-        lines.append("".join(buf).rstrip())
-    return "\n".join(lines)
-
-
 def _render_detected_table_markdown(detected) -> str:
     """Render a DetectedTable (from LLM fallback) as a markdown pipe table."""
     if not detected.column_names:
@@ -1213,26 +1166,6 @@ def _render_table_markdown_with_headers(
         lines.append("|" + "|".join(cells) + "|")
 
     return "\n".join(lines)
-
-
-def _refine_headers_with_llm(spatial_excerpt: str, data_column_count: int):
-    """Call LLM to refine table headers. Returns RefinedHeaders or None on failure."""
-    try:
-        from baml_client.sync_client import b as b_sync
-        refined = b_sync.RefineTableHeaders(spatial_excerpt, data_column_count)
-        logger.debug(
-            "LLM header refinement: structure=%s, header_rows=%d, columns=%d",
-            refined.header_structure.value, refined.header_row_count, len(refined.column_names),
-        )
-        if len(refined.column_names) != data_column_count:
-            logger.debug(
-                "LLM returned %d column names, expected %d",
-                len(refined.column_names), data_column_count,
-            )
-        return refined
-    except Exception:
-        logger.debug("LLM header refinement failed, falling back to heuristic", exc_info=True)
-        return None
 
 
 def _detect_table_with_llm(spatial_text: str):

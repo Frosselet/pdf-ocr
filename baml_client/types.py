@@ -89,7 +89,7 @@ class TableType(str, Enum):
     Unknown = "Unknown"
 
 # #########################################################################
-# Generated classes (16)
+# Generated classes (15)
 # #########################################################################
 
 class AggregationInfo(BaseModel):
@@ -159,12 +159,6 @@ class ParsedTable(BaseModel):
     aggregations: typing.Optional["AggregationInfo"] = Field(default=None, description='Present only if the table contains aggregation rows/columns')
     data_rows: typing.List[typing.List[str]] = Field(description='All data rows. Each inner array is one row of cell values as strings.')
     notes: typing.Optional[str] = Field(default=None, description='Any caveats or observations about the table structure')
-
-class RefinedHeaders(BaseModel):
-    header_structure: HeaderStructure = Field(description='Vertical organization of the column labels.')
-    header_row_count: int = Field(description='Number of rows occupied by column labels.')
-    column_names: typing.List[str] = Field(description='Clean column names, one per data column.')
-    notes: typing.Optional[str] = Field(default=None, description='Observations: merged cells, spanning parents, missing headers, etc.')
 
 class Resume(BaseModel):
     name: str = Field(description='Full name of the person')

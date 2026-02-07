@@ -23,7 +23,7 @@ class StreamState(BaseModel, typing.Generic[StreamStateValueT]):
     value: StreamStateValueT
     state: typing_extensions.Literal["Pending", "Incomplete", "Complete"]
 # #########################################################################
-# Generated classes (16)
+# Generated classes (15)
 # #########################################################################
 
 class AggregationInfo(BaseModel):
@@ -93,12 +93,6 @@ class ParsedTable(BaseModel):
     aggregations: typing.Optional["AggregationInfo"] = Field(default=None, description='Present only if the table contains aggregation rows/columns')
     data_rows: typing.List[typing.List[str]] = Field(description='All data rows. Each inner array is one row of cell values as strings.')
     notes: typing.Optional[str] = Field(default=None, description='Any caveats or observations about the table structure')
-
-class RefinedHeaders(BaseModel):
-    header_structure: typing.Optional[types.HeaderStructure] = Field(default=None, description='Vertical organization of the column labels.')
-    header_row_count: typing.Optional[int] = Field(default=None, description='Number of rows occupied by column labels.')
-    column_names: typing.List[str] = Field(description='Clean column names, one per data column.')
-    notes: typing.Optional[str] = Field(default=None, description='Observations: merged cells, spanning parents, missing headers, etc.')
 
 class Resume(BaseModel):
     name: typing.Optional[str] = Field(default=None, description='Full name of the person')
