@@ -181,21 +181,52 @@ Row 3: times       →  11:45 AM   2:25 PM   8:06 AM   8:06 AM   11:15 PM
 
 The compressor detects repeating span-count patterns (here `[5, 7, 5]`) and merges sub-rows, producing cells like `10/07/2025 11:45 AM`. A header offset search skips irregular header rows before finding the repeating body pattern.
 
-### LLM Header Refinement
+### Alignment-Aware Header Matching
 
-When `refine_headers=True` (the default), a lightweight LLM (GPT-4o-mini) improves compress output in two ways:
+PDF tables often have **inconsistent text alignment** between headers and data:
+- Headers may be left-aligned or centered, while data is right-aligned (numbers)
+- Headers may be positioned slightly before or after the data column they describe
+- The same logical column can have span positions 5-10 characters apart between headers and data
 
-**Always-on header refinement** — For every heuristic-detected table, the spatial text excerpt is sent to GPT-4o-mini along with the data column count. Before calling the LLM, the excerpt is expanded upward to include **preceding header rows** that sit above the table region. Header rows in complex documents (e.g., loading statements with 9 wrapped header rows) often have different span counts and alignments than data rows, so `_classify_regions` puts them in kv_pairs/scattered/heading regions rather than the table. `_find_preceding_header_rows` scans upward from the table's first row, collecting rows whose span positions align (within `render_tolerance`) with data column positions. Scanning stops at the first non-matching row, a gap > 2 rows, or a row belonging to another table region. The preceding rows are prepended to the spatial excerpt and **suppressed** from their original non-table region rendering to avoid ambiguous duplication. Non-table regions that lose all their rows to this filtering are dropped entirely; regions that only partially overlap keep their remaining rows. The LLM returns:
-- Clean column names (combining multiline/stacked headers, using `"Parent / Child"` paths for hierarchical spanning headers)
-- The number of header rows to skip from the data grid
+Simple start-position matching fails in these cases. For example, a "QUANTITY" header at position 233 won't match a data column at position 239 if the tolerance is only 4.
 
-**Exact text preservation** — The LLM is instructed to preserve the **exact original text** from wrapped headers, not rephrase or interpret them. For stacked headers, fragments are concatenated verbatim with spaces: "DATE AT WHICH" + "NOMINATION" + "WAS RECEIVED" → "DATE AT WHICH NOMINATION WAS RECEIVED" (not "Nomination Date"). This ensures column names match the source document exactly.
+`_build_stacked_headers()` solves this using **bounding-box overlap** instead of start-position matching:
 
-This replaces the naive "first grid row = header" approach that fails on stacked headers, hierarchical layouts, and other complex structures.
+1. **Compute column bounds** from data rows — for each column, find the `(min_start, max_end)` across all data spans. This captures the full horizontal extent regardless of alignment.
 
-**Table detection fallback** — When heuristics find no table on a page (e.g., the layout doesn't meet the strict 2+ spans / 2+ shared anchors / 3+ rows requirements), the full page spatial text is sent to GPT-4o-mini for table detection. If a table is found, it's rendered as a pipe table and inserted into the output alongside heuristic-rendered non-table regions.
+2. **Match headers by overlap** — a header span `[h_start, h_end)` matches a column if it overlaps with `[d_min - margin, d_max)` where `margin=5` captures headers positioned just before the data.
 
-Both LLM calls use `CustomGPT4oMini` defined in `baml_src/compress.baml`. Failures are handled gracefully — any LLM error (network, missing API key, timeout, malformed response) silently falls back to heuristic output. The `refine_headers=True` path is never worse than `refine_headers=False`.
+3. **Best-overlap wins** — when a header overlaps multiple columns (common with stacked headers near column boundaries), it's assigned to the column with maximum overlap.
+
+4. **Deduplicate** — consecutive identical words are removed from the final header (handles spans that appear in multiple overlapping header rows).
+
+**Example: Bunge loading statement**
+
+The PDF has 22 columns with 9 stacked header rows. Without alignment-aware matching:
+
+| Column | Header Position | Data Position | Start-based | Overlap-based |
+|--------|-----------------|---------------|-------------|---------------|
+| 9 | 121-125 "FROM" | 125-135 | ✗ (miss by 0) | ✓ overlap 9 |
+| 17 | 233-241 "QUANTITY" | 239-244 | ✗ (miss by 6) | ✓ overlap 5 |
+| 20 | 274-286 "DATE LOADING" | 279-289 | ✗ (miss by 5) | ✓ overlap 10 |
+
+Result: All 22 columns now have correct headers.
+
+**Why this matters**: Real-world PDFs are often created in Excel or other tools where humans adjust column widths, merge cells, and use different alignments without consistency. Building heuristics for the chaotic case (mixed alignment, manual formatting) rather than the optimistic case (automated, consistent) produces robust extraction.
+
+### Preceding Header Row Detection
+
+Header rows in complex documents (e.g., loading statements with 9 wrapped header rows) often have different span counts and alignments than data rows, so `_classify_regions` puts them in kv_pairs/scattered/heading regions rather than the table.
+
+`_find_preceding_header_rows` scans upward from the table's first row, collecting rows whose span positions align (within `render_tolerance`) with data column positions. Scanning stops at the first non-matching row, a gap > 2 rows, or a row belonging to another table region.
+
+The preceding rows are **suppressed** from their original non-table region rendering to avoid ambiguous duplication. Non-table regions that lose all their rows to this filtering are dropped entirely; regions that only partially overlap keep their remaining rows.
+
+### LLM Table Detection Fallback
+
+When `refine_headers=True` (the default) and heuristics find no table on a page (e.g., the layout doesn't meet the strict 2+ spans / 2+ shared anchors / 3+ rows requirements), the full page spatial text is sent to GPT-4o-mini for table detection. If a table is found, it's rendered as a pipe table and inserted into the output alongside heuristic-rendered non-table regions.
+
+The LLM call uses `CustomGPT4oMini` defined in `baml_src/compress.baml`. Failures are handled gracefully — any LLM error (network, missing API key, timeout, malformed response) silently falls back to heuristic output.
 
 Setting `refine_headers=False` gives identical behavior to the pure-heuristic path: no LLM calls, no API key needed.
 

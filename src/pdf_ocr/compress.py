@@ -619,39 +619,104 @@ def _estimate_header_rows(rows: list[list[tuple[int, str]]]) -> int:
     return 0
 
 
+def _compute_column_bounds(
+    data_rows: list[list[tuple[int, str]]],
+    col_map: dict[int, int],
+    num_cols: int,
+) -> list[tuple[int, int]]:
+    """Compute column bounds (min_start, max_end) from data rows.
+
+    For each column, finds the leftmost start position and rightmost end
+    position across all data spans assigned to that column. This captures
+    the full horizontal extent of each column regardless of alignment
+    (left, right, or center).
+
+    Returns a list of (min_start, max_end) tuples, one per column.
+    Columns with no data get bounds (0, 0).
+    """
+    bounds: list[list[int]] = [[float('inf'), 0] for _ in range(num_cols)]  # type: ignore[misc]
+
+    for row in data_rows:
+        for col, text in row:
+            ci = col_map.get(col)
+            if ci is not None:
+                start = col
+                end = col + len(text)
+                bounds[ci][0] = min(bounds[ci][0], start)
+                bounds[ci][1] = max(bounds[ci][1], end)
+
+    # Convert to tuples, defaulting empty columns to (0, 0)
+    result: list[tuple[int, int]] = []
+    for min_s, max_e in bounds:
+        if min_s == float('inf'):
+            result.append((0, 0))
+        else:
+            result.append((min_s, max_e))
+
+    return result
+
+
 def _build_stacked_headers(
     header_rows: list[list[tuple[int, str]]],
-    canonical: list[int],
-    col_tolerance: int,
+    col_bounds: list[tuple[int, int]],
+    left_margin: int = 5,
 ) -> list[str]:
-    """Build column names from stacked header rows using column alignment.
+    """Build column names from stacked header rows using bounding-box overlap.
 
-    For each canonical column position, finds all header text fragments
-    that align with it across header rows, then concatenates them vertically
-    (top to bottom) with spaces.
+    For each column, finds all header text fragments whose horizontal extent
+    overlaps with the column's data bounds (extended by left_margin), then
+    concatenates them vertically (top to bottom) with spaces.
+
+    Uses bounding-box overlap instead of start-position matching to handle
+    mixed alignment (left-aligned headers with right-aligned data, etc.).
+
+    Args:
+        header_rows: List of header rows, each row is list of (col, text) tuples.
+        col_bounds: List of (min_start, max_end) tuples, one per column.
+        left_margin: Extend column bounds leftward by this amount to capture
+            headers that are positioned just before the data starts (common
+            when headers are left-aligned but data is right-aligned).
 
     This is deterministic and more reliable than LLM parsing for complex
     stacked headers.
     """
-    if not header_rows or not canonical:
+    if not header_rows or not col_bounds:
         return []
 
-    num_cols = len(canonical)
+    num_cols = len(col_bounds)
     # For each column, collect aligned header fragments in row order.
     col_fragments: list[list[str]] = [[] for _ in range(num_cols)]
+
+    def _overlaps(h_start: int, h_end: int, d_min: int, d_max: int) -> bool:
+        """Check if header span [h_start, h_end) overlaps data bounds [d_min, d_max).
+
+        The data bounds are extended leftward by left_margin to capture headers
+        that are positioned just before the column's data starts.
+        """
+        return h_start < d_max and h_end > (d_min - left_margin)
 
     for row in header_rows:
         # Track which columns got text in this row.
         row_assignments: dict[int, str] = {}
         for col_pos, text in row:
-            # Find the canonical column this position maps to.
+            h_start = col_pos
+            h_end = col_pos + len(text)
+
+            # Find all columns this header span overlaps with.
+            # If it overlaps multiple, assign to the one with maximum overlap.
             best_ci = None
-            best_dist = float('inf')
-            for ci, can_pos in enumerate(canonical):
-                dist = abs(col_pos - can_pos)
-                if dist <= col_tolerance and dist < best_dist:
-                    best_ci = ci
-                    best_dist = dist
+            best_overlap = 0
+            for ci, (d_min, d_max) in enumerate(col_bounds):
+                if d_min == d_max == 0:
+                    continue  # Skip empty columns
+                if _overlaps(h_start, h_end, d_min, d_max):
+                    # Compute overlap amount using extended bounds (d_min - left_margin)
+                    # to be consistent with the overlap check.
+                    overlap = min(h_end, d_max) - max(h_start, d_min - left_margin)
+                    if overlap > best_overlap:
+                        best_ci = ci
+                        best_overlap = overlap
+
             if best_ci is not None:
                 # If multiple spans map to same column, join with space.
                 if best_ci in row_assignments:
@@ -667,7 +732,14 @@ def _build_stacked_headers(
     # Build final column names by joining fragments.
     column_names = []
     for fragments in col_fragments:
-        name = " ".join(fragments).strip()
+        # Deduplicate consecutive identical words (can happen with overlapping
+        # header spans that get assigned to the same column).
+        deduped_words: list[str] = []
+        for fragment in fragments:
+            for word in fragment.split():
+                if not deduped_words or word != deduped_words[-1]:
+                    deduped_words.append(word)
+        name = " ".join(deduped_words)
         column_names.append(name)
 
     return column_names
@@ -1359,47 +1431,50 @@ def _compress_page(
                     )
                     rendered_parts.append(_render_table_markdown(table_rows, render_tolerance))
                 else:
-                    # 5. Grid ALL table rows (including misclassified "header" rows that
-                    # may actually be data rows with more columns filled). Merge twin
-                    # columns to handle adjacent never-simultaneously-filled columns.
-                    all_grid = _rows_to_grid(table_rows, num_cols, col_map)
-                    all_grid, num_cols = _merge_twin_columns(all_grid, num_cols)
-
-                    # 6. Find header rows above this table region.
+                    # 5. Find header rows above this table region BEFORE any grid manipulation.
                     preceding = _find_preceding_header_rows(
                         layout, region.row_indices[0], canonical,
                         render_tolerance, all_table_rows,
                     )
 
-                    # 7. LLM refines headers with extended spatial context.
                     if preceding:
                         logger.debug(
                             "Found %d preceding header rows: %s",
                             len(preceding), preceding,
                         )
-                    excerpt_rows = preceding + region.row_indices
-                    spatial_excerpt = _render_spatial_excerpt(layout, excerpt_rows)
-                    refined = _refine_headers_with_llm(spatial_excerpt, num_cols)
 
-                    if refined is not None:
-                        if refined.header_structure.value == "Hierarchical":
-                            logger.debug(
-                                "Hierarchical headers detected — compound names may need unpivoting downstream"
-                            )
-                        # 8. Skip header rows from the grid using the heuristic count.
-                        # The LLM's header_row_count is unreliable for complex stacked
-                        # headers across preceding + table rows. Use the heuristic
-                        # header_count which was computed for the table region itself.
-                        grid = all_grid[header_count:]
-                        # 9. Render with LLM names and data grid.
-                        rendered_parts.append(
-                            _render_table_markdown_with_headers(grid, refined.column_names)
-                        )
-                    else:
-                        # LLM failed — fall back to heuristic.
-                        rendered_parts.append(
-                            _render_table_markdown(table_rows, render_tolerance)
-                        )
+                    # 6. Build stacked headers BEFORE twin merging (uses original column structure).
+                    # Collect all header rows: preceding + table-internal headers.
+                    all_header_rows = []
+                    for ri in preceding:
+                        all_header_rows.append(sorted(layout.rows[ri]))
+                    all_header_rows.extend(table_rows[:header_count])
+
+                    # Compute column bounds from data rows for bounding-box matching.
+                    col_bounds = _compute_column_bounds(data_rows, col_map, num_cols)
+
+                    # Build column names using overlap-based matching.
+                    column_names = _build_stacked_headers(all_header_rows, col_bounds)
+
+                    # 7. Grid ALL table rows and merge twin columns.
+                    all_grid = _rows_to_grid(table_rows, num_cols, col_map)
+                    all_grid, merged_num_cols = _merge_twin_columns(all_grid, num_cols)
+
+                    # If twin merging reduced column count, we need to merge corresponding headers.
+                    if merged_num_cols < num_cols:
+                        # Rebuild the grid without twin merging for now — twin merging
+                        # creates a mismatch between header count and grid columns.
+                        # TODO: properly merge headers when columns are merged.
+                        all_grid = _rows_to_grid(table_rows, num_cols, col_map)
+                        merged_num_cols = num_cols
+
+                    # 8. Skip header rows from the grid.
+                    grid = all_grid[header_count:]
+
+                    # 9. Render with deterministic column names and data grid.
+                    rendered_parts.append(
+                        _render_table_markdown_with_headers(grid, column_names)
+                    )
             else:
                 # Original path (no LLM or TSV format).
                 if merge_multi_row:
