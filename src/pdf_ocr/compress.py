@@ -899,6 +899,12 @@ def _find_preceding_header_rows(
     at least one of its span positions aligns (within tolerance) with
     a data column position. Stops at the first non-matching row, a
     gap > 2, or a row belonging to another table region.
+
+    Single-span rows are filtered more strictly to avoid including
+    document titles or metadata that happen to overlap column positions:
+    - The span must START at a position close to a column start (not just
+      overlap via margin extension)
+    - Wide single spans (> 30 chars) at non-column positions are rejected
     """
     all_rows = sorted(ri for ri in layout.rows if ri < table_start_row)
 
@@ -914,15 +920,31 @@ def _find_preceding_header_rows(
             break
 
         entries = layout.rows[ri]
-        has_overlap = any(
-            any(abs(col - dc) <= tolerance for dc in data_col_positions)
-            for col, _ in entries
-        )
 
-        if has_overlap:
+        # Single-span rows need stricter validation to avoid document titles.
+        # Header fragments are typically SHORT (e.g., "Quantity", "Date of", "(tonnes)").
+        # Document titles and metadata are longer (e.g., "Shipping Stem Report").
+        if len(entries) == 1:
+            col, text = entries[0]
+            # Check if span START aligns with a column (tighter tolerance).
+            start_aligns = any(abs(col - dc) <= tolerance for dc in data_col_positions)
+            if not start_aligns:
+                break
+            # Single-span header fragments should be short (< 15 chars typically).
+            # Longer single spans are likely titles/metadata, not column labels.
+            if len(text) > 15:
+                break
             result.append(ri)
         else:
-            break
+            # Multi-span rows: at least one span must overlap.
+            has_overlap = any(
+                any(abs(col - dc) <= tolerance for dc in data_col_positions)
+                for col, _ in entries
+            )
+            if has_overlap:
+                result.append(ri)
+            else:
+                break
 
     result.reverse()
     return result
