@@ -48,11 +48,18 @@ function RefineTableHeaders(spatial_excerpt: string, data_column_count: int) -> 
        (not data).
     3. RESOLVE: Produce column_names (exactly {{ data_column_count }} entries):
        - SingleRow: use each header cell directly as the column name.
-       - Stacked: concatenate fragments top-to-bottom at the same column position.
-       - Hierarchical: use "Parent / Child" compound paths.
-       - If a column has no visible header, use a descriptive placeholder.
+       - Stacked: concatenate fragments top-to-bottom at the same column position,
+         using EXACT original text. Join with single space. Do NOT rephrase,
+         abbreviate, or interpret — just flatten the wrapped text verbatim.
+         Example: "DATE AT WHICH" + "NOMINATION" + "WAS RECEIVED"
+         → "DATE AT WHICH NOMINATION WAS RECEIVED" (not "Nomination Date")
+       - Hierarchical: use "Parent / Child" compound paths with exact original text.
+       - If a column has no visible header, use empty string "".
     4. Read column positions carefully. The spatial layout shows where each header
        label is positioned — match them to the {{ data_column_count }} data columns.
+
+    CRITICAL: Preserve the original text exactly. Do not rename, rephrase, or
+    "clean up" column names. The goal is to flatten wrapped headers, not interpret them.
 
     {{ ctx.output_format }}
   "#

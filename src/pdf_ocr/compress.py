@@ -381,8 +381,9 @@ def _detect_table_runs(
 
         # Reject rows that look like flowing text (long average span length).
         # Tables have short data values (~5-8 chars), text has phrases (~12+ chars).
+        # But high span counts (>= 10) are almost certainly tables regardless of length.
         avg_len = (avg_span_lens or {}).get(ri, 0.0)
-        if avg_len > 10.0 and sc >= 2:
+        if avg_len > 10.0 and 2 <= sc < 10:
             # This looks like flowing text, not table data. Flush any current run.
             _flush_run()
             current_run = []
