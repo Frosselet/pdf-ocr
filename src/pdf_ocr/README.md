@@ -189,6 +189,8 @@ When `refine_headers=True` (the default), a lightweight LLM (GPT-4o-mini) improv
 - Clean column names (combining multiline/stacked headers, using `"Parent / Child"` paths for hierarchical spanning headers)
 - The number of header rows to skip from the data grid
 
+**Exact text preservation** — The LLM is instructed to preserve the **exact original text** from wrapped headers, not rephrase or interpret them. For stacked headers, fragments are concatenated verbatim with spaces: "DATE AT WHICH" + "NOMINATION" + "WAS RECEIVED" → "DATE AT WHICH NOMINATION WAS RECEIVED" (not "Nomination Date"). This ensures column names match the source document exactly.
+
 This replaces the naive "first grid row = header" approach that fails on stacked headers, hierarchical layouts, and other complex structures.
 
 **Table detection fallback** — When heuristics find no table on a page (e.g., the layout doesn't meet the strict 2+ spans / 2+ shared anchors / 3+ rows requirements), the full page spatial text is sent to GPT-4o-mini for table detection. If a table is found, it's rendered as a pipe table and inserted into the output alongside heuristic-rendered non-table regions.
@@ -240,6 +242,14 @@ Without splitting, heuristics would merge these into a single wide table with ma
 `_find_horizontal_gaps()` detects **large gaps** (≥40 character positions) between adjacent canonical column positions. When gaps are found, the table is split at those points using `_split_grid_horizontally()`, and each sub-table is rendered as a separate markdown table.
 
 This detection happens **before LLM header refinement** — if horizontal gaps indicate side-by-side tables, the compressor skips the LLM path and uses the splitting render path directly. This ensures each table gets its own header row and separator.
+
+### Table Run Continuity
+
+Tables are detected as contiguous runs of rows that share column positions. Two heuristics prevent false splits and false inclusions:
+
+**Empty cells don't break tables** — A row with fewer filled columns (due to empty cells) still belongs to the table if ≥60% of its column positions match the established structure. This prevents splits when later rows have missing values in the rightmost columns.
+
+**Flowing text rejection** — Rows with high average span length (>12 characters) are rejected as flowing text rather than table data. Tables have short values (~5-8 chars: dates, numbers, codes) while paragraph text has longer phrases (~15+ chars). This prevents disclaimer paragraphs from being misclassified as tables.
 
 ### API
 
