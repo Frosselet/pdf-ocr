@@ -8,22 +8,562 @@ whitespace-heavy spatial grids.
 from __future__ import annotations
 
 import logging
+import re
 from bisect import bisect_right
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
 import fitz  # PyMuPDF
 
-from pdf_ocr.spatial_text import PageLayout, _extract_page_layout, _open_pdf
+from pdf_ocr.spatial_text import (
+    PageLayout,
+    VisualElements,
+    VisualFill,
+    VisualLine,
+    _extract_page_layout,
+    _open_pdf,
+)
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Cell type detection — for TH1/TH2 heuristics
+# ---------------------------------------------------------------------------
+
+
+class CellType(Enum):
+    """Classification of cell content for type pattern analysis."""
+
+    DATE = "date"
+    NUMBER = "number"
+    ENUM = "enum"  # Repeated categorical value
+    STRING = "string"  # Default fallback
+
+
+# Date patterns for type detection (subset of serialize.py patterns)
+_DATE_PATTERNS = [
+    # ISO formats
+    re.compile(r"^\d{4}-\d{2}-\d{2}$"),  # YYYY-MM-DD
+    re.compile(r"^\d{4}-\d{2}$"),  # YYYY-MM
+    re.compile(r"^\d{4}$"),  # YYYY alone (might be year)
+    # Slashed formats
+    re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$"),  # D/M/Y or M/D/Y
+    re.compile(r"^\d{1,2}-\d{1,2}-\d{2,4}$"),  # D-M-Y or M-D-Y
+    # Time formats
+    re.compile(r"^\d{1,2}:\d{2}(:\d{2})?$"),  # HH:MM or HH:MM:SS
+    re.compile(r"^\d{1,2}:\d{2}\s*[AaPp][Mm]$"),  # HH:MM AM/PM
+    # Combined date-time
+    re.compile(r"^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}"),  # ISO datetime
+    re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}"),  # D/M/Y HH:MM
+    # Month names
+    re.compile(r"^[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}$"),  # January 1, 2025
+    re.compile(r"^\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}$"),  # 1 January 2025
+    re.compile(r"^[A-Za-z]{3,9}\s+\d{4}$"),  # January 2025
+]
+
+# Number pattern: digits with optional separators, signs, currency
+_NUMBER_PATTERN = re.compile(
+    r"^[($€£¥+-]?\s*"  # Optional leading sign/currency/paren
+    r"[\d,.\s]+"  # Digits with separators
+    r"\s*[)%]?$"  # Optional trailing paren/percent
+)
+
+
+def _detect_cell_type(text: str | None) -> CellType:
+    """Classify a cell's content as DATE, NUMBER, or STRING.
+
+    Note: ENUM detection requires column-level analysis (repeated values)
+    and cannot be done at the single-cell level. This function returns
+    STRING for potential enum values; use _detect_column_types() for
+    proper enum detection.
+    """
+    if text is None:
+        return CellType.STRING
+
+    text = str(text).strip()
+    if not text:
+        return CellType.STRING
+
+    # Check for date patterns first
+    for pattern in _DATE_PATTERNS:
+        if pattern.match(text):
+            return CellType.DATE
+
+    # Check for number pattern
+    if _NUMBER_PATTERN.match(text):
+        # Verify it's actually numeric (not just punctuation)
+        cleaned = re.sub(r"[($€£¥+\-,.\s)%]", "", text)
+        if cleaned.isdigit():
+            return CellType.NUMBER
+
+    return CellType.STRING
+
+
+def _detect_column_types(
+    grid: list[list[str]],
+    skip_header_rows: int = 0,
+) -> list[CellType]:
+    """Detect the predominant type for each column.
+
+    Analyzes data rows to determine the most common type per column.
+    ENUM is detected when a column has few distinct values (≤10% of rows
+    or ≤5 unique values) and those values repeat.
+
+    Args:
+        grid: Table grid (list of rows, each row is list of cell strings)
+        skip_header_rows: Number of header rows to skip in analysis
+
+    Returns:
+        List of CellType, one per column
+    """
+    if not grid:
+        return []
+
+    num_cols = len(grid[0]) if grid else 0
+    data_rows = grid[skip_header_rows:]
+
+    if not data_rows or num_cols == 0:
+        return [CellType.STRING] * num_cols
+
+    # Collect values and types per column
+    col_values: list[list[str]] = [[] for _ in range(num_cols)]
+    col_types: list[Counter[CellType]] = [Counter() for _ in range(num_cols)]
+
+    for row in data_rows:
+        for ci, cell in enumerate(row):
+            if ci >= num_cols:
+                break
+            cell = cell.strip()
+            if cell:
+                col_values[ci].append(cell)
+                col_types[ci][_detect_cell_type(cell)] += 1
+
+    # Determine predominant type per column
+    result: list[CellType] = []
+    for ci in range(num_cols):
+        values = col_values[ci]
+        type_counts = col_types[ci]
+
+        if not values:
+            result.append(CellType.STRING)
+            continue
+
+        # Check for enum: few unique values that repeat
+        unique_values = set(values)
+        unique_ratio = len(unique_values) / len(values) if values else 1.0
+        is_enum = (
+            len(unique_values) <= 5
+            or unique_ratio <= 0.1
+        ) and len(values) >= 3  # Need at least 3 values to detect enum
+
+        if is_enum and type_counts.get(CellType.STRING, 0) > 0:
+            result.append(CellType.ENUM)
+        elif type_counts:
+            # Most common type wins
+            result.append(type_counts.most_common(1)[0][0])
+        else:
+            result.append(CellType.STRING)
+
+    return result
+
+
+def _row_type_signature(row: list[str]) -> list[CellType]:
+    """Get the type signature of a row (list of cell types)."""
+    return [_detect_cell_type(cell) for cell in row]
+
+
+def _is_header_type_pattern(row: list[str]) -> bool:
+    """Check if a row has a header-like type pattern (all strings, no dates/numbers).
+
+    TH1 heuristic: Headers are labels (strings), not data (dates, numbers, enums).
+    """
+    if not row:
+        return False
+
+    for cell in row:
+        cell_type = _detect_cell_type(cell.strip())
+        if cell_type in (CellType.DATE, CellType.NUMBER):
+            return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Visual heuristics — cross-validation with text heuristics
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class VisualGridInfo:
+    """Grid structure detected from visual elements (VH1)."""
+
+    bbox: tuple[float, float, float, float]  # x0, y0, x1, y1
+    h_line_count: int
+    v_line_count: int
+    has_grid: bool  # ≥3 h-lines AND ≥3 v-lines with intersections
+
+
+@dataclass
+class VisualHeaderInfo:
+    """Header highlighting detected from visual elements (VH2)."""
+
+    header_fill_rows: list[int]  # Row indices with header-like fills
+    header_color: tuple[float, float, float] | None
+
+
+@dataclass
+class VisualZebraInfo:
+    """Zebra striping detected from visual elements (VH3)."""
+
+    zebra_start_row: int | None
+    zebra_end_row: int | None
+    alternating_colors: tuple[tuple[float, float, float], tuple[float, float, float]] | None
+
+
+@dataclass
+class VisualSeparatorInfo:
+    """Section separators detected from visual elements (VH4)."""
+
+    separator_y_positions: list[float]  # Y positions of thick horizontal lines
+
+
+@dataclass
+class VisualValidation:
+    """Result of visual heuristics analysis."""
+
+    grid: VisualGridInfo | None = None
+    header: VisualHeaderInfo | None = None
+    zebra: VisualZebraInfo | None = None
+    separators: VisualSeparatorInfo | None = None
+
+    # Cross-validation results
+    has_visual_elements: bool = False
+
+
+@dataclass
+class CrossValidationResult:
+    """Result of comparing text and visual heuristics."""
+
+    # Where both channels agree
+    agreements: list[str] = field(default_factory=list)
+
+    # Visual detected something text missed
+    text_gaps: list[str] = field(default_factory=list)
+
+    # Text detected something visual missed (often valid - whitespace tables)
+    visual_gaps: list[str] = field(default_factory=list)
+
+    # Contradictions requiring investigation
+    contradictions: list[str] = field(default_factory=list)
+
+
+def _detect_visual_grid(
+    visual: VisualElements,
+    page_width: float,
+    page_height: float,
+) -> VisualGridInfo | None:
+    """VH1: Detect table grid boundaries from visual elements.
+
+    A grid exists if:
+    - ≥3 horizontal lines AND ≥3 vertical lines
+    - Lines form a bounded structure (intersect or align)
+    """
+    if not visual.h_lines and not visual.v_lines:
+        return None
+
+    # Filter significant lines (spanning reasonable portion of table)
+    min_h_len = page_width * 0.1  # At least 10% of page width
+    min_v_len = page_height * 0.02  # At least 2% of page height
+
+    sig_h = [l for l in visual.h_lines if (l.end - l.start) >= min_h_len]
+    sig_v = [l for l in visual.v_lines if (l.end - l.start) >= min_v_len]
+
+    if len(sig_h) < 3 or len(sig_v) < 3:
+        return None
+
+    # Compute bounding box of grid
+    h_positions = [l.position for l in sig_h]
+    v_positions = [l.position for l in sig_v]
+
+    if not h_positions or not v_positions:
+        return None
+
+    bbox = (
+        min(v_positions),  # x0
+        min(h_positions),  # y0
+        max(v_positions),  # x1
+        max(h_positions),  # y1
+    )
+
+    return VisualGridInfo(
+        bbox=bbox,
+        h_line_count=len(sig_h),
+        v_line_count=len(sig_v),
+        has_grid=True,
+    )
+
+
+def _detect_visual_header(
+    visual: VisualElements,
+    row_y_positions: list[float],
+    tolerance: float = 5.0,
+) -> VisualHeaderInfo | None:
+    """VH2: Detect header background highlighting.
+
+    Headers typically have a distinct fill color in the top portion
+    of the table region.
+    """
+    if not visual.fills or not row_y_positions:
+        return None
+
+    # Find fills that overlap with the top few rows
+    first_few_rows = row_y_positions[:5] if len(row_y_positions) >= 5 else row_y_positions
+
+    if not first_few_rows:
+        return None
+
+    top_y = min(first_few_rows)
+    header_zone_end = max(first_few_rows) + tolerance
+
+    # Find fills in the header zone
+    header_fills: list[VisualFill] = []
+    for fill in visual.fills:
+        _, y0, _, y1 = fill.bbox
+        # Fill overlaps with header zone
+        if y0 <= header_zone_end and y1 >= top_y - tolerance:
+            header_fills.append(fill)
+
+    if not header_fills:
+        return None
+
+    # Group fills by color
+    color_counts: Counter[tuple[float, float, float]] = Counter()
+    for fill in header_fills:
+        if fill.color:
+            color_counts[fill.color] += 1
+
+    if not color_counts:
+        return None
+
+    # Most common color is likely the header color
+    header_color = color_counts.most_common(1)[0][0]
+
+    # Find which rows have this header color
+    header_rows: list[int] = []
+    for row_idx, row_y in enumerate(row_y_positions[:10]):  # Check first 10 rows
+        for fill in header_fills:
+            _, fy0, _, fy1 = fill.bbox
+            if fill.color == header_color and fy0 <= row_y <= fy1:
+                header_rows.append(row_idx)
+                break
+
+    if not header_rows:
+        return None
+
+    return VisualHeaderInfo(
+        header_fill_rows=header_rows,
+        header_color=header_color,
+    )
+
+
+def _detect_visual_zebra(
+    visual: VisualElements,
+    row_y_positions: list[float],
+    tolerance: float = 5.0,
+) -> VisualZebraInfo | None:
+    """VH3: Detect data row alternation (zebra striping).
+
+    Zebra pattern: alternating fill colors across consecutive rows.
+    """
+    if not visual.fills or len(row_y_positions) < 4:
+        return None
+
+    # Map each row to its fill color (if any)
+    row_colors: dict[int, tuple[float, float, float] | None] = {}
+
+    for row_idx, row_y in enumerate(row_y_positions):
+        row_color = None
+        for fill in visual.fills:
+            _, fy0, _, fy1 = fill.bbox
+            if fy0 - tolerance <= row_y <= fy1 + tolerance:
+                row_color = fill.color
+                break
+        row_colors[row_idx] = row_color
+
+    # Look for alternating pattern in middle section (skip potential headers)
+    start_check = min(3, len(row_y_positions) // 4)
+    end_check = len(row_y_positions)
+
+    # Count consecutive alternations
+    colors_seen: set[tuple[float, float, float]] = set()
+    alternation_count = 0
+    prev_color = None
+
+    zebra_start = None
+    zebra_end = None
+
+    for row_idx in range(start_check, end_check):
+        color = row_colors.get(row_idx)
+        if color is None:
+            continue
+
+        if prev_color is not None and color != prev_color:
+            alternation_count += 1
+            if zebra_start is None:
+                zebra_start = row_idx - 1
+            zebra_end = row_idx
+            colors_seen.add(color)
+            colors_seen.add(prev_color)
+
+        prev_color = color
+
+    # Need at least 4 alternations (8 rows) to confirm zebra pattern
+    if alternation_count >= 4 and len(colors_seen) == 2:
+        colors_list = list(colors_seen)
+        return VisualZebraInfo(
+            zebra_start_row=zebra_start,
+            zebra_end_row=zebra_end,
+            alternating_colors=(colors_list[0], colors_list[1]),
+        )
+
+    return None
+
+
+def _detect_visual_separators(
+    visual: VisualElements,
+    table_width: float,
+    median_line_width: float | None = None,
+) -> VisualSeparatorInfo | None:
+    """VH4: Detect section separator lines.
+
+    Separators are horizontal lines that:
+    - Span most of the table width (>80%)
+    - Are thicker than regular cell borders
+    """
+    if not visual.h_lines:
+        return None
+
+    # Calculate median line width if not provided
+    if median_line_width is None and visual.h_lines:
+        widths = [l.width for l in visual.h_lines if l.width > 0]
+        if widths:
+            widths.sort()
+            median_line_width = widths[len(widths) // 2]
+        else:
+            median_line_width = 1.0
+
+    # Find separator lines
+    separator_positions: list[float] = []
+    width_threshold = table_width * 0.8
+    thickness_threshold = median_line_width * 1.5 if median_line_width else 1.5
+
+    for line in visual.h_lines:
+        line_len = line.end - line.start
+        if line_len >= width_threshold and line.width >= thickness_threshold:
+            separator_positions.append(line.position)
+
+    if not separator_positions:
+        return None
+
+    return VisualSeparatorInfo(separator_y_positions=sorted(separator_positions))
+
+
+def _analyze_visual_structure(
+    visual: VisualElements | None,
+    row_y_positions: list[float],
+    page_width: float = 612.0,  # Default letter width
+    page_height: float = 792.0,  # Default letter height
+) -> VisualValidation:
+    """Run all visual heuristics (VH1-VH6) on extracted visual elements.
+
+    Args:
+        visual: Visual elements from page (may be None)
+        row_y_positions: Y positions of text rows for alignment
+        page_width: Page width for relative calculations
+        page_height: Page height for relative calculations
+
+    Returns:
+        VisualValidation with results from each heuristic
+    """
+    if visual is None:
+        return VisualValidation(has_visual_elements=False)
+
+    has_elements = bool(visual.h_lines or visual.v_lines or visual.fills)
+    if not has_elements:
+        return VisualValidation(has_visual_elements=False)
+
+    # Run each visual heuristic
+    grid = _detect_visual_grid(visual, page_width, page_height)
+    header = _detect_visual_header(visual, row_y_positions)
+    zebra = _detect_visual_zebra(visual, row_y_positions)
+
+    # For separators, estimate table width from grid or page
+    table_width = page_width
+    if grid and grid.has_grid:
+        table_width = grid.bbox[2] - grid.bbox[0]
+
+    separators = _detect_visual_separators(visual, table_width)
+
+    return VisualValidation(
+        grid=grid,
+        header=header,
+        zebra=zebra,
+        separators=separators,
+        has_visual_elements=True,
+    )
+
+
+def _cross_validate_header_rows(
+    text_header_count: int,
+    visual: VisualValidation,
+    data_rows: list[list[str]],
+) -> CrossValidationResult:
+    """Cross-validate header detection between text and visual heuristics.
+
+    Implements VH6 (exception highlighting) and TH1/TH2 (type patterns).
+    """
+    result = CrossValidationResult()
+
+    if not visual.has_visual_elements:
+        return result
+
+    # Compare text-based header count with visual header detection
+    if visual.header:
+        visual_header_count = len(visual.header.header_fill_rows)
+
+        if visual_header_count == text_header_count:
+            result.agreements.append(
+                f"Header rows: text={text_header_count}, visual={visual_header_count} (match)"
+            )
+        else:
+            # Check for VH6: exception highlighting
+            # If visual suggests more headers but type pattern says data...
+            if visual_header_count > text_header_count and data_rows:
+                first_disputed_row = data_rows[0] if data_rows else []
+                if first_disputed_row and not _is_header_type_pattern(first_disputed_row):
+                    result.agreements.append(
+                        f"VH6: Row {text_header_count} has header color but data types "
+                        f"(exception highlight, not header)"
+                    )
+                else:
+                    result.contradictions.append(
+                        f"Header mismatch: text={text_header_count}, visual={visual_header_count}"
+                    )
+            else:
+                result.contradictions.append(
+                    f"Header mismatch: text={text_header_count}, visual={visual_header_count}"
+                )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Region types and data structures
 # ---------------------------------------------------------------------------
+
 
 class RegionType(Enum):
     TABLE = "table"
@@ -40,6 +580,24 @@ class Region:
     type: RegionType
     row_indices: list[int]
     rows: dict[int, list[tuple[int, str]]]  # subset of PageLayout.rows
+
+
+@dataclass
+class TableMetadata:
+    """Non-data/header info for a table."""
+
+    page_number: int
+    table_index: int  # For side-by-side tables (0, 1, ...)
+    section_label: str | None  # GERALDTON, etc. if detected above table
+
+
+@dataclass
+class StructuredTable:
+    """A table in structured format."""
+
+    metadata: TableMetadata
+    column_names: list[str]  # Final flattened names from _build_stacked_headers()
+    data: list[list[str]]  # Data rows (each row has len == len(column_names))
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +895,36 @@ def _is_table_continuation(text: str) -> bool:
     for ch in " ,._$€£%+-":
         stripped = stripped.replace(ch, "")
     return stripped.isdigit()
+
+
+def _looks_like_section_label(text: str) -> bool:
+    """Return True if text looks like a section label rather than a header fragment.
+
+    Section labels (GERALDTON, KWINANA, NORTH REGION) are:
+    - All uppercase
+    - Typically location/category names that separate table sections
+
+    Header fragments (Date of, Quantity:, ETA) are:
+    - Mixed case, or
+    - Short abbreviations (≤3 chars even if uppercase), or
+    - Contain punctuation like colons
+
+    This is used in _find_preceding_header_rows to reject section labels
+    from being included as header rows.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return False
+    # Contains colon → likely header fragment ("Quantity:", "Date of:")
+    if ":" in stripped:
+        return False
+    # Short all-caps text (≤3 chars) → likely abbreviation header (ETA, ETB, ID)
+    if len(stripped) <= 3:
+        return False
+    # All uppercase → likely section label (GERALDTON, NORTH REGION)
+    if stripped.isupper():
+        return True
+    return False
 
 
 def _detect_table_runs(
@@ -676,8 +1264,10 @@ def _build_stacked_headers(
 
             # Find all columns this header span overlaps with.
             # If it overlaps multiple, assign to the one with maximum overlap.
+            # Tie-breaker: prefer column whose start is closest to header start.
             best_ci = None
             best_overlap = 0
+            best_dist = float("inf")
             for ci, (d_min, d_max) in enumerate(col_bounds):
                 if d_min == d_max == 0:
                     continue  # Skip empty columns
@@ -685,9 +1275,11 @@ def _build_stacked_headers(
                     # Compute overlap amount using extended bounds (d_min - left_margin)
                     # to be consistent with the overlap check.
                     overlap = min(h_end, d_max) - max(h_start, d_min - left_margin)
-                    if overlap > best_overlap:
+                    dist = abs(h_start - d_min)
+                    if overlap > best_overlap or (overlap == best_overlap and dist < best_dist):
                         best_ci = ci
                         best_overlap = overlap
+                        best_dist = dist
 
             if best_ci is not None:
                 # If multiple spans map to same column, join with space.
@@ -933,6 +1525,13 @@ def _find_preceding_header_rows(
             # Single-span header fragments should be short (< 15 chars typically).
             # Longer single spans are likely titles/metadata, not column labels.
             if len(text) > 15:
+                break
+            # Reject section labels (GERALDTON, KWINANA, etc.) that look like
+            # they could be headers but are actually table region separators.
+            # Note: _looks_like_section_label is different from _is_table_continuation —
+            # section labels are all-caps location/category names, while header fragments
+            # like "Date of" or "Quantity:" should be kept.
+            if _looks_like_section_label(text):
                 break
             result.append(ri)
         else:
@@ -1209,8 +1808,475 @@ def _detect_table_with_llm(spatial_text: str):
 
 
 # ---------------------------------------------------------------------------
-# Page compression
+# Page compression — structured output
 # ---------------------------------------------------------------------------
+
+def _find_section_label_above(
+    regions: list[Region],
+    table_region_index: int,
+) -> str | None:
+    """Find a HEADING region before a table region.
+
+    Looks for the closest HEADING region that appears before the given table
+    region, skipping over SCATTERED regions that represent table header rows.
+    These are typically port/section labels like "GERALDTON", "KWINANA", etc.
+
+    Returns the section label text if found, else None.
+    """
+    if table_region_index <= 0:
+        return None
+
+    # Look backwards through regions to find a HEADING
+    # Skip SCATTERED regions (which may be table header fragments)
+    for i in range(table_region_index - 1, -1, -1):
+        region = regions[i]
+
+        if region.type == RegionType.HEADING:
+            # Extract the heading text
+            text_parts: list[str] = []
+            for ri in region.row_indices:
+                if ri in region.rows:
+                    for _, text in region.rows[ri]:
+                        text_parts.append(text)
+
+            heading_text = " ".join(text_parts).strip()
+
+            # Section labels are short and not table continuation text
+            if heading_text and len(heading_text) < 50 and not _is_table_continuation(heading_text):
+                return heading_text
+            return None
+
+        elif region.type == RegionType.TABLE:
+            # Hit another table - no section label for this table
+            return None
+
+        # Skip SCATTERED regions (likely table header fragments)
+        # Continue looking for a HEADING
+
+    return None
+
+
+def _compress_page_structured(
+    page: fitz.Page,
+    page_number: int,
+    cluster_threshold: float = 2.0,
+    merge_multi_row: bool = True,
+    min_table_rows: int = 3,
+    refine_headers: bool = True,
+    extract_visual: bool = True,
+) -> list[StructuredTable]:
+    """Extract structured tables from a single PDF page.
+
+    Returns a list of StructuredTable objects, one per table found.
+    Side-by-side tables are serialized as separate entries.
+
+    Args:
+        page: PyMuPDF page object.
+        page_number: 0-based page index.
+        cluster_threshold: Maximum y-distance for row merging.
+        merge_multi_row: If True, detect and merge multi-row records.
+        min_table_rows: Minimum rows to classify as table.
+        refine_headers: If True, use LLM fallback for missed tables.
+        extract_visual: If True, extract visual elements for cross-validation.
+    """
+    layout = _extract_page_layout(page, cluster_threshold, extract_visual=extract_visual)
+    if layout is None:
+        return []
+
+    # Split spans that the PDF merged across column boundaries.
+    layout = _split_merged_spans(layout)
+
+    # Use relative column tolerance based on cell width.
+    col_tolerance = _compute_col_tolerance(layout.cell_w)
+    regions = _classify_regions(layout, min_table_rows, col_tolerance)
+
+    if not regions:
+        return []
+
+    has_tables = any(r.type == RegionType.TABLE for r in regions)
+
+    # === VISUAL ANALYSIS ===
+    # Run visual heuristics for cross-validation (parallel channel)
+    visual_validation: VisualValidation | None = None
+    if layout.visual is not None:
+        # Build row Y positions for visual analysis
+        row_y_positions = layout.row_y_positions
+
+        visual_validation = _analyze_visual_structure(
+            layout.visual,
+            row_y_positions,
+            page.rect.width,
+            page.rect.height,
+        )
+
+        if visual_validation.has_visual_elements:
+            logger.debug(
+                "Visual elements detected (page %d): grid=%s, header=%s, zebra=%s",
+                page_number,
+                visual_validation.grid is not None,
+                visual_validation.header is not None,
+                visual_validation.zebra is not None,
+            )
+
+            # Cross-validate: visual detects table but text didn't?
+            if visual_validation.grid and visual_validation.grid.has_grid and not has_tables:
+                logger.warning(
+                    "Visual grid detected (VH1) but no TABLE region found — "
+                    "possible text heuristic gap (page %d)",
+                    page_number,
+                )
+
+    # === FALLBACK: no tables detected, ask the LLM ===
+    if not has_tables and refine_headers:
+        from pdf_ocr.spatial_text import _render_page_grid
+        spatial = _render_page_grid(page, cluster_threshold)
+        detected = _detect_table_with_llm(spatial)
+        if detected and detected.column_names:
+            return [StructuredTable(
+                metadata=TableMetadata(
+                    page_number=page_number,
+                    table_index=0,
+                    section_label=None,
+                ),
+                column_names=list(detected.column_names),
+                data=[list(row) for row in detected.data_rows],
+            )]
+        return []
+
+    # === NORMAL PATH: extract tables ===
+    structured_tables: list[StructuredTable] = []
+    table_counter = 0  # Track table index within page
+
+    # Collect all table row indices for boundary detection.
+    all_table_rows: set[int] = set()
+    for region in regions:
+        if region.type == RegionType.TABLE:
+            all_table_rows.update(region.row_indices)
+
+    # Pre-compute preceding header rows for each table.
+    table_preceding_headers: dict[int, list[int]] = {}
+    preceding_header_rows_set: set[int] = set()
+
+    render_tol = max(col_tolerance, round(10.0 / layout.cell_w))
+    for region in regions:
+        if region.type != RegionType.TABLE:
+            continue
+        trows = [sorted(region.rows[ri]) for ri in region.row_indices]
+        # Skip transposed tables — they don't have header rows above.
+        if _is_transposed_table(trows, render_tol):
+            continue
+        hc = None
+        if merge_multi_row:
+            sc = {ri: len(region.rows[ri]) for ri in region.row_indices}
+            mr = _detect_multi_row_period(region, sc)
+            if mr is not None:
+                hc = mr[0]
+        if hc is None:
+            hc = _estimate_header_rows(trows)
+        data_rows = trows[hc:]
+        if data_rows:
+            can, _ = _unify_columns(data_rows, render_tol)
+            preceding = _find_preceding_header_rows(
+                layout, region.row_indices[0], can,
+                render_tol, all_table_rows,
+            )
+            table_preceding_headers[region.row_indices[0]] = preceding
+            preceding_header_rows_set.update(preceding)
+
+    for region_idx, region in enumerate(regions):
+        if region.type != RegionType.TABLE:
+            continue
+
+        table_rows = [sorted(region.rows[ri]) for ri in region.row_indices]
+        render_tolerance = max(col_tolerance, round(10.0 / layout.cell_w))
+
+        # Detect transposed table structure.
+        is_transposed = _is_transposed_table(table_rows, render_tolerance)
+
+        if is_transposed:
+            logger.debug("Transposed table detected — using simple extraction")
+            # For transposed tables, use simple column unification
+            canonical, col_map = _unify_columns(table_rows, render_tolerance)
+            num_cols = len(canonical)
+            grid = _rows_to_grid(table_rows, num_cols, col_map)
+
+            # First column is typically the label column
+            column_names = [""] * num_cols
+            if grid and grid[0]:
+                column_names[0] = "Field"
+                for i in range(1, num_cols):
+                    column_names[i] = f"Value {i}" if num_cols > 2 else "Value"
+
+            section_label = _find_section_label_above(regions, region_idx)
+            structured_tables.append(StructuredTable(
+                metadata=TableMetadata(
+                    page_number=page_number,
+                    table_index=table_counter,
+                    section_label=section_label,
+                ),
+                column_names=column_names,
+                data=grid,
+            ))
+            table_counter += 1
+            continue
+
+        if refine_headers:
+            # 1. Detect multi-row pattern (also finds header boundary).
+            mr_header_count = None
+            period = 1
+            if merge_multi_row:
+                span_counts = {ri: len(region.rows[ri]) for ri in region.row_indices}
+                mr_result = _detect_multi_row_period(region, span_counts)
+                if mr_result is not None:
+                    mr_header_count, period = mr_result
+
+            # 2. Determine header/data boundary.
+            header_count = (
+                mr_header_count if mr_header_count is not None
+                else _estimate_header_rows(table_rows)
+            )
+
+            # 3. Multi-row merge if applicable.
+            if period > 1:
+                table_rows = _merge_multi_row_records(
+                    region, header_count, period
+                )
+
+            # 4. Build columns from DATA rows only.
+            data_rows = table_rows[header_count:]
+            canonical, col_map = _unify_columns(data_rows, render_tolerance)
+
+            # Extend with rightmost columns from header rows.
+            if header_count > 0 and canonical:
+                rightmost_data = canonical[-1]
+                header_rows_spans = table_rows[:header_count]
+                for row in header_rows_spans:
+                    for col, _ in row:
+                        if col > rightmost_data + render_tolerance:
+                            already_mapped = any(
+                                abs(col - c) <= render_tolerance for c in canonical
+                            )
+                            if not already_mapped:
+                                canonical.append(col)
+                canonical.sort()
+
+            # Rebuild col_map for all table rows.
+            col_map = {}
+            for ci, c in enumerate(canonical):
+                col_map[c] = ci
+            for row in table_rows:
+                for col, _ in row:
+                    if col not in col_map:
+                        for ci, c in enumerate(canonical):
+                            if abs(col - c) <= render_tolerance:
+                                col_map[col] = ci
+                                break
+                        else:
+                            nearest_ci = min(
+                                range(len(canonical)),
+                                key=lambda i: abs(canonical[i] - col),
+                            )
+                            col_map[col] = nearest_ci
+
+            num_cols = len(canonical)
+
+            # Check for horizontal gaps indicating side-by-side tables.
+            horizontal_gaps = _find_horizontal_gaps(canonical)
+            if horizontal_gaps:
+                logger.debug(
+                    "Side-by-side tables detected (gaps at cols %s) — splitting",
+                    [canonical[g] for g in horizontal_gaps],
+                )
+                # Split into separate tables
+                all_grid = _rows_to_grid(table_rows, num_cols, col_map)
+                sub_grids = _split_grid_horizontally(all_grid, horizontal_gaps)
+
+                # Split canonical columns for each sub-table
+                all_splits = [0] + horizontal_gaps + [num_cols]
+                sub_canonical_lists = [
+                    canonical[all_splits[i]:all_splits[i + 1]]
+                    for i in range(len(all_splits) - 1)
+                ]
+
+                # Get preceding headers for this table
+                preceding = table_preceding_headers.get(region.row_indices[0], [])
+
+                # Find section label above this table
+                section_label = _find_section_label_above(regions, region_idx)
+
+                for sub_idx, (sub_grid, sub_canonical) in enumerate(
+                    zip(sub_grids, sub_canonical_lists)
+                ):
+                    if not sub_grid or not any(any(cell for cell in row) for row in sub_grid):
+                        continue
+
+                    # Build col_map for this sub-table's columns
+                    sub_num_cols = len(sub_canonical)
+                    sub_col_map = {c: i for i, c in enumerate(sub_canonical)}
+
+                    # Build column bounds for sub-table
+                    # Need to remap data_rows to sub-table's column range
+                    sub_data_rows = []
+                    start_col_idx = all_splits[sub_idx]
+                    end_col_idx = all_splits[sub_idx + 1]
+                    for row in data_rows:
+                        sub_row = []
+                        for col, text in row:
+                            ci = col_map.get(col)
+                            if ci is not None and start_col_idx <= ci < end_col_idx:
+                                # Adjust column position to sub-table coordinates
+                                sub_row.append((col, text))
+                        if sub_row:
+                            sub_data_rows.append(sub_row)
+
+                    # Rebuild sub_col_map from actual positions in sub_data_rows
+                    sub_all_cols: set[int] = set()
+                    for row in sub_data_rows:
+                        for col, _ in row:
+                            sub_all_cols.add(col)
+                    sub_canonical_actual = sorted(sub_all_cols)
+                    sub_col_map = {c: i for i, c in enumerate(sub_canonical_actual)}
+                    sub_num_cols = len(sub_canonical_actual)
+
+                    sub_col_bounds = _compute_column_bounds(
+                        sub_data_rows, sub_col_map, sub_num_cols
+                    )
+
+                    # Build header rows for sub-table (filter spans that overlap)
+                    all_header_rows = []
+                    for ri in preceding:
+                        all_header_rows.append(sorted(layout.rows[ri]))
+                    all_header_rows.extend(table_rows[:header_count])
+
+                    sub_column_names = _build_stacked_headers(
+                        all_header_rows, sub_col_bounds
+                    )
+
+                    # Get data rows (skip header rows)
+                    sub_data_grid = sub_grid[header_count:]
+
+                    # Ensure column_names matches grid width
+                    grid_width = len(sub_data_grid[0]) if sub_data_grid else 0
+                    if len(sub_column_names) < grid_width:
+                        sub_column_names.extend([""] * (grid_width - len(sub_column_names)))
+                    elif len(sub_column_names) > grid_width:
+                        sub_column_names = sub_column_names[:grid_width]
+
+                    structured_tables.append(StructuredTable(
+                        metadata=TableMetadata(
+                            page_number=page_number,
+                            table_index=table_counter,
+                            section_label=section_label if sub_idx == 0 else None,
+                        ),
+                        column_names=sub_column_names,
+                        data=sub_data_grid,
+                    ))
+                    table_counter += 1
+            else:
+                # Single table (no horizontal splits)
+                preceding = table_preceding_headers.get(region.row_indices[0], [])
+
+                if preceding:
+                    logger.debug(
+                        "Found %d preceding header rows: %s",
+                        len(preceding), preceding,
+                    )
+
+                # Find section label above this table
+                section_label = _find_section_label_above(regions, region_idx)
+
+                # Build stacked headers
+                all_header_rows = []
+                for ri in preceding:
+                    all_header_rows.append(sorted(layout.rows[ri]))
+                all_header_rows.extend(table_rows[:header_count])
+
+                col_bounds = _compute_column_bounds(data_rows, col_map, num_cols)
+                column_names = _build_stacked_headers(all_header_rows, col_bounds)
+
+                # Grid and (optionally) merge twin columns
+                all_grid = _rows_to_grid(table_rows, num_cols, col_map)
+                all_grid, merged_num_cols = _merge_twin_columns(all_grid, num_cols)
+
+                if merged_num_cols < num_cols:
+                    # Rebuild without twin merging for now
+                    all_grid = _rows_to_grid(table_rows, num_cols, col_map)
+
+                # Skip header rows
+                grid = all_grid[header_count:]
+
+                # Ensure column_names matches grid width
+                grid_width = len(grid[0]) if grid else 0
+                if len(column_names) < grid_width:
+                    column_names.extend([""] * (grid_width - len(column_names)))
+                elif len(column_names) > grid_width:
+                    column_names = column_names[:grid_width]
+
+                structured_tables.append(StructuredTable(
+                    metadata=TableMetadata(
+                        page_number=page_number,
+                        table_index=table_counter,
+                        section_label=section_label,
+                    ),
+                    column_names=column_names,
+                    data=grid,
+                ))
+                table_counter += 1
+        else:
+            # Non-refined path: simple extraction
+            if merge_multi_row:
+                span_counts = {ri: len(region.rows[ri]) for ri in region.row_indices}
+                result = _detect_multi_row_period(region, span_counts)
+                if result is not None:
+                    header_rows_count, period = result
+                    if period > 1:
+                        table_rows = _merge_multi_row_records(
+                            region, header_rows_count, period
+                        )
+
+            canonical, col_map = _unify_columns(table_rows, render_tolerance)
+            num_cols = len(canonical)
+            grid = _rows_to_grid(table_rows, num_cols, col_map)
+
+            # First row as headers
+            column_names = grid[0] if grid else []
+            data = grid[1:] if len(grid) > 1 else []
+
+            structured_tables.append(StructuredTable(
+                metadata=TableMetadata(
+                    page_number=page_number,
+                    table_index=table_counter,
+                    section_label=None,
+                ),
+                column_names=column_names,
+                data=data,
+            ))
+            table_counter += 1
+
+    return structured_tables
+
+
+def _render_structured_table_markdown(table: StructuredTable) -> str:
+    """Render a StructuredTable as a markdown pipe table."""
+    return _render_table_markdown_with_headers(table.data, table.column_names)
+
+
+def _render_tables_to_markdown(
+    tables: list[StructuredTable],
+    non_table_parts: list[str],
+) -> str:
+    """Render structured tables and non-table parts to markdown string.
+
+    Interleaves non-table content with table markdown.
+    """
+    # For now, just render tables in order with non-table parts first
+    parts: list[str] = list(non_table_parts)
+    for table in tables:
+        md = _render_structured_table_markdown(table)
+        if md:
+            parts.append(md)
+    return "\n\n".join(p for p in parts if p)
+
 
 def _compress_page(
     page: fitz.Page,
@@ -1219,9 +2285,20 @@ def _compress_page(
     merge_multi_row: bool = True,
     min_table_rows: int = 3,
     refine_headers: bool = True,
+    extract_visual: bool = True,
 ) -> str:
-    """Compress a single PDF page into structured text."""
-    layout = _extract_page_layout(page, cluster_threshold)
+    """Compress a single PDF page into structured text.
+
+    Args:
+        page: PyMuPDF page object.
+        cluster_threshold: Maximum y-distance for row merging.
+        table_format: "markdown" or "tsv".
+        merge_multi_row: If True, detect and merge multi-row records.
+        min_table_rows: Minimum rows to classify as table.
+        refine_headers: If True, use LLM fallback for missed tables.
+        extract_visual: If True, extract visual elements for cross-validation.
+    """
+    layout = _extract_page_layout(page, cluster_threshold, extract_visual=extract_visual)
     if layout is None:
         return ""
 
@@ -1236,6 +2313,38 @@ def _compress_page(
         return ""
 
     has_tables = any(r.type == RegionType.TABLE for r in regions)
+
+    # === VISUAL ANALYSIS ===
+    # Run visual heuristics for cross-validation (parallel channel)
+    visual_validation: VisualValidation | None = None
+    if layout.visual is not None:
+        # Build row Y positions for visual analysis
+        # We need the actual Y coordinates, but layout only has row indices
+        # For now, use row indices as proxy (will be refined if needed)
+        row_y_positions = layout.row_y_positions
+
+        visual_validation = _analyze_visual_structure(
+            layout.visual,
+            row_y_positions,
+            page.rect.width,
+            page.rect.height,
+        )
+
+        if visual_validation.has_visual_elements:
+            logger.debug(
+                "Visual elements detected: grid=%s, header=%s, zebra=%s, separators=%s",
+                visual_validation.grid is not None,
+                visual_validation.header is not None,
+                visual_validation.zebra is not None,
+                visual_validation.separators is not None,
+            )
+
+            # Cross-validate: visual detects table but text didn't?
+            if visual_validation.grid and visual_validation.grid.has_grid and not has_tables:
+                logger.warning(
+                    "Visual grid detected (VH1) but no TABLE region found by text heuristics — "
+                    "possible text heuristic gap"
+                )
 
     # === FALLBACK: no tables detected, ask the LLM ===
     if not has_tables and refine_headers:
@@ -1490,6 +2599,7 @@ def compress_spatial_text(
     table_format: str = "markdown",
     merge_multi_row: bool = True,
     min_table_rows: int = 3,
+    extract_visual: bool = True,
 ) -> str:
     """Convert a PDF to compressed structured text for LLM consumption.
 
@@ -1511,6 +2621,8 @@ def compress_spatial_text(
             tables (e.g., 3-row shipping stem entries). Default True.
         min_table_rows: Minimum number of multi-span rows to classify a
             region as a table. Default 3.
+        extract_visual: If True, extract visual elements (lines, fills) for
+            cross-validation with text heuristics. Default True.
 
     Returns:
         A single string with all compressed pages joined by *page_separator*.
@@ -1526,6 +2638,63 @@ def compress_spatial_text(
             merge_multi_row=merge_multi_row,
             min_table_rows=min_table_rows,
             refine_headers=refine_headers,
+            extract_visual=extract_visual,
         ))
     doc.close()
     return page_separator.join(rendered)
+
+
+def compress_spatial_text_structured(
+    pdf_input: str | bytes | Path,
+    *,
+    pages: list[int] | None = None,
+    cluster_threshold: float = 2.0,
+    merge_multi_row: bool = True,
+    min_table_rows: int = 3,
+    extract_visual: bool = True,
+) -> list[StructuredTable]:
+    """Extract structured tables from a PDF.
+
+    Returns a list of StructuredTable objects containing:
+    - metadata: page_number, table_index (for side-by-side tables), section_label
+    - column_names: list of column header strings
+    - data: list of rows, each row is a list of cell strings
+
+    Side-by-side tables on the same page are serialized as separate entries
+    with incrementing table_index values.
+
+    Args:
+        pdf_input: Path to PDF file (str or Path), or raw PDF bytes.
+        pages: Optional list of 0-based page indices to process.
+            If None, all pages are processed.
+        cluster_threshold: Maximum y-distance (in points) to merge into
+            the same text row. Default 2.0.
+        merge_multi_row: If True, detect and merge multi-row records in
+            tables (e.g., 3-row shipping stem entries). Default True.
+        min_table_rows: Minimum number of multi-span rows to classify a
+            region as a table. Default 3.
+        extract_visual: If True, extract visual elements for cross-validation.
+            Default True.
+
+    Returns:
+        A list of StructuredTable objects, one per table found across
+        all processed pages.
+    """
+    doc = _open_pdf(pdf_input)
+    page_indices = pages if pages is not None else range(len(doc))
+    all_tables: list[StructuredTable] = []
+
+    for idx in page_indices:
+        tables = _compress_page_structured(
+            doc[idx],
+            page_number=idx,
+            cluster_threshold=cluster_threshold,
+            merge_multi_row=merge_multi_row,
+            min_table_rows=min_table_rows,
+            refine_headers=True,
+            extract_visual=extract_visual,
+        )
+        all_tables.extend(tables)
+
+    doc.close()
+    return all_tables

@@ -1,7 +1,12 @@
 """pdf-ocr: Extract structured data from PDF documents."""
 
 from pdf_ocr import serialize
-from pdf_ocr.compress import compress_spatial_text
+from pdf_ocr.compress import (
+    StructuredTable,
+    TableMetadata,
+    compress_spatial_text,
+    compress_spatial_text_structured,
+)
 from pdf_ocr.filter import FilterMatch, extract_table_titles, filter_pdf_by_table_titles
 from pdf_ocr.interpret import (
     CanonicalSchema,
@@ -21,14 +26,27 @@ from pdf_ocr.serialize import (
     to_polars,
     to_tsv,
 )
-from pdf_ocr.spatial_text import pdf_to_spatial_text
+from pdf_ocr.spatial_text import (
+    PageLayout,
+    VisualElements,
+    VisualFill,
+    VisualLine,
+    pdf_to_spatial_text,
+)
 
 __all__ = [
     "CanonicalSchema",
     "ColumnDef",
     "FilterMatch",
+    "PageLayout",
     "SerializationValidationError",
+    "StructuredTable",
+    "TableMetadata",
+    "VisualElements",
+    "VisualFill",
+    "VisualLine",
     "compress_spatial_text",
+    "compress_spatial_text_structured",
     "extract_table_titles",
     "filter_pdf_by_table_titles",
     "infer_table_schema_from_image",
