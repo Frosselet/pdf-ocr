@@ -27,169 +27,28 @@ from pdf_ocr.spatial_text import (
     _open_pdf,
 )
 
+# Import shared semantic heuristics
+# These encode universal human inference patterns applicable across formats
+from pdf_ocr.heuristics import (
+    CellType,
+    detect_cell_type,
+    detect_column_types,
+    is_header_type_pattern,
+    row_type_signature,
+)
+
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Cell type detection — for TH1/TH2 heuristics
+# Cell type detection — aliased from shared heuristics module
 # ---------------------------------------------------------------------------
 
-
-class CellType(Enum):
-    """Classification of cell content for type pattern analysis."""
-
-    DATE = "date"
-    NUMBER = "number"
-    ENUM = "enum"  # Repeated categorical value
-    STRING = "string"  # Default fallback
-
-
-# Date patterns for type detection (subset of serialize.py patterns)
-_DATE_PATTERNS = [
-    # ISO formats
-    re.compile(r"^\d{4}-\d{2}-\d{2}$"),  # YYYY-MM-DD
-    re.compile(r"^\d{4}-\d{2}$"),  # YYYY-MM
-    re.compile(r"^\d{4}$"),  # YYYY alone (might be year)
-    # Slashed formats
-    re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$"),  # D/M/Y or M/D/Y
-    re.compile(r"^\d{1,2}-\d{1,2}-\d{2,4}$"),  # D-M-Y or M-D-Y
-    # Time formats
-    re.compile(r"^\d{1,2}:\d{2}(:\d{2})?$"),  # HH:MM or HH:MM:SS
-    re.compile(r"^\d{1,2}:\d{2}\s*[AaPp][Mm]$"),  # HH:MM AM/PM
-    # Combined date-time
-    re.compile(r"^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}"),  # ISO datetime
-    re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}"),  # D/M/Y HH:MM
-    # Month names
-    re.compile(r"^[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}$"),  # January 1, 2025
-    re.compile(r"^\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}$"),  # 1 January 2025
-    re.compile(r"^[A-Za-z]{3,9}\s+\d{4}$"),  # January 2025
-]
-
-# Number pattern: digits with optional separators, signs, currency
-_NUMBER_PATTERN = re.compile(
-    r"^[($€£¥+-]?\s*"  # Optional leading sign/currency/paren
-    r"[\d,.\s]+"  # Digits with separators
-    r"\s*[)%]?$"  # Optional trailing paren/percent
-)
-
-
-def _detect_cell_type(text: str | None) -> CellType:
-    """Classify a cell's content as DATE, NUMBER, or STRING.
-
-    Note: ENUM detection requires column-level analysis (repeated values)
-    and cannot be done at the single-cell level. This function returns
-    STRING for potential enum values; use _detect_column_types() for
-    proper enum detection.
-    """
-    if text is None:
-        return CellType.STRING
-
-    text = str(text).strip()
-    if not text:
-        return CellType.STRING
-
-    # Check for date patterns first
-    for pattern in _DATE_PATTERNS:
-        if pattern.match(text):
-            return CellType.DATE
-
-    # Check for number pattern
-    if _NUMBER_PATTERN.match(text):
-        # Verify it's actually numeric (not just punctuation)
-        cleaned = re.sub(r"[($€£¥+\-,.\s)%]", "", text)
-        if cleaned.isdigit():
-            return CellType.NUMBER
-
-    return CellType.STRING
-
-
-def _detect_column_types(
-    grid: list[list[str]],
-    skip_header_rows: int = 0,
-) -> list[CellType]:
-    """Detect the predominant type for each column.
-
-    Analyzes data rows to determine the most common type per column.
-    ENUM is detected when a column has few distinct values (≤10% of rows
-    or ≤5 unique values) and those values repeat.
-
-    Args:
-        grid: Table grid (list of rows, each row is list of cell strings)
-        skip_header_rows: Number of header rows to skip in analysis
-
-    Returns:
-        List of CellType, one per column
-    """
-    if not grid:
-        return []
-
-    num_cols = len(grid[0]) if grid else 0
-    data_rows = grid[skip_header_rows:]
-
-    if not data_rows or num_cols == 0:
-        return [CellType.STRING] * num_cols
-
-    # Collect values and types per column
-    col_values: list[list[str]] = [[] for _ in range(num_cols)]
-    col_types: list[Counter[CellType]] = [Counter() for _ in range(num_cols)]
-
-    for row in data_rows:
-        for ci, cell in enumerate(row):
-            if ci >= num_cols:
-                break
-            cell = cell.strip()
-            if cell:
-                col_values[ci].append(cell)
-                col_types[ci][_detect_cell_type(cell)] += 1
-
-    # Determine predominant type per column
-    result: list[CellType] = []
-    for ci in range(num_cols):
-        values = col_values[ci]
-        type_counts = col_types[ci]
-
-        if not values:
-            result.append(CellType.STRING)
-            continue
-
-        # Check for enum: few unique values that repeat
-        unique_values = set(values)
-        unique_ratio = len(unique_values) / len(values) if values else 1.0
-        is_enum = (
-            len(unique_values) <= 5
-            or unique_ratio <= 0.1
-        ) and len(values) >= 3  # Need at least 3 values to detect enum
-
-        if is_enum and type_counts.get(CellType.STRING, 0) > 0:
-            result.append(CellType.ENUM)
-        elif type_counts:
-            # Most common type wins
-            result.append(type_counts.most_common(1)[0][0])
-        else:
-            result.append(CellType.STRING)
-
-    return result
-
-
-def _row_type_signature(row: list[str]) -> list[CellType]:
-    """Get the type signature of a row (list of cell types)."""
-    return [_detect_cell_type(cell) for cell in row]
-
-
-def _is_header_type_pattern(row: list[str]) -> bool:
-    """Check if a row has a header-like type pattern (all strings, no dates/numbers).
-
-    TH1 heuristic: Headers are labels (strings), not data (dates, numbers, enums).
-    """
-    if not row:
-        return False
-
-    for cell in row:
-        cell_type = _detect_cell_type(cell.strip())
-        if cell_type in (CellType.DATE, CellType.NUMBER):
-            return False
-
-    return True
+# Re-export with underscore prefix for backward compatibility with internal usage
+_detect_cell_type = detect_cell_type
+_detect_column_types = detect_column_types
+_is_header_type_pattern = is_header_type_pattern
+_row_type_signature = row_type_signature
 
 
 # ---------------------------------------------------------------------------

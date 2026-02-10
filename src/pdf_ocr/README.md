@@ -1,6 +1,6 @@
-# pdf_ocr — Structured PDF Data Extraction
+# pdf_ocr — Structured Document Data Extraction
 
-Extract structured tabular data from PDFs using spatial text analysis and LLM interpretation.
+Extract structured tabular data from PDFs, Excel, Word, PowerPoint, and HTML using spatial text analysis and LLM interpretation.
 
 ---
 
@@ -123,6 +123,11 @@ Each module has detailed documentation including all heuristics:
 | `filter.py` | Fuzzy title filtering | [FILTER.md](FILTER.md) |
 | `interpret.py` | LLM schema mapping | [INTERPRET.md](INTERPRET.md) |
 | `serialize.py` | Export to various formats | [SERIALIZE.md](SERIALIZE.md) |
+| `heuristics.py` | Shared semantic heuristics | (see below) |
+| `xlsx_extractor.py` | Excel extraction | (see Multi-Format section) |
+| `docx_extractor.py` | Word extraction | (see Multi-Format section) |
+| `pptx_extractor.py` | PowerPoint extraction | (see Multi-Format section) |
+| `html_extractor.py` | HTML extraction | (see Multi-Format section) |
 
 ---
 
@@ -196,12 +201,202 @@ Each heuristic encodes a human inference pattern. The table shows: what humans d
 
 ---
 
+## Multi-Format Document Extraction
+
+Beyond PDFs, this library extracts tables from Excel, Word, PowerPoint, and HTML documents using the same semantic heuristics.
+
+### Supported Formats
+
+| Format | Extension | Library | Notes |
+|--------|-----------|---------|-------|
+| **PDF** | `.pdf` | PyMuPDF | Full spatial + visual analysis |
+| **Excel 2007+** | `.xlsx` | openpyxl | Merged cells, styles, multi-sheet |
+| **Excel 97-2003** | `.xls` | xlrd | Legacy format support |
+| **Word 2007+** | `.docx` | python-docx | gridSpan, vMerge handling |
+| **Word 97-2003** | `.doc` | LibreOffice | Converts to .docx first |
+| **PowerPoint 2007+** | `.pptx` | python-pptx | Table shapes + text clustering |
+| **PowerPoint 97-2003** | `.ppt` | LibreOffice | Converts to .pptx first |
+| **HTML** | `.html` | selectolax | colspan, rowspan, inline styles |
+
+### Quick Examples
+
+#### Excel (XLSX/XLS)
+
+```python
+from pdf_ocr import extract_tables_from_excel
+
+# Auto-detects format (.xlsx or .xls)
+tables = extract_tables_from_excel("report.xlsx")
+
+for table in tables:
+    print(f"Sheet: {table.metadata['sheet_name']}")
+    print(f"Headers: {table.column_names}")
+    print(f"Rows: {len(table.data)}")
+
+    for row in table.data[:3]:  # First 3 rows
+        print(row)
+```
+
+#### Word (DOCX/DOC)
+
+```python
+from pdf_ocr import extract_tables_from_word
+
+# Auto-detects format (.docx or .doc)
+# Note: .doc requires LibreOffice installed
+tables = extract_tables_from_word("document.docx")
+
+for i, table in enumerate(tables):
+    print(f"Table {i + 1}: {len(table.column_names)} columns, {len(table.data)} rows")
+```
+
+#### PowerPoint (PPTX/PPT)
+
+```python
+from pdf_ocr import extract_tables_from_powerpoint
+
+# Extracts both table shapes and text-box tables
+tables = extract_tables_from_powerpoint("presentation.pptx")
+
+for table in tables:
+    slide = table.metadata.get("slide_number", 0) + 1
+    from_shapes = table.metadata.get("from_shapes", False)
+    source = " (reconstructed from text boxes)" if from_shapes else ""
+    print(f"Slide {slide}{source}: {table.column_names}")
+```
+
+#### HTML
+
+```python
+from pdf_ocr import extract_tables_from_html
+
+# From file
+tables = extract_tables_from_html("page.html")
+
+# From string
+html_content = """
+<table>
+  <thead><tr><th>Name</th><th>Value</th></tr></thead>
+  <tbody>
+    <tr><td>Item A</td><td>100</td></tr>
+    <tr><td>Item B</td><td>200</td></tr>
+  </tbody>
+</table>
+"""
+tables = extract_tables_from_html(html_content)
+
+for table in tables:
+    print(f"Columns: {table.column_names}")
+    print(f"Data: {table.data}")
+```
+
+### Unified StructuredTable Output
+
+All extractors return `list[StructuredTable]` with consistent structure:
+
+```python
+@dataclass
+class StructuredTable:
+    column_names: list[str]      # Header names (stacked if multi-row)
+    data: list[list[str]]        # Data rows
+    source_format: str           # "pdf", "xlsx", "xls", "docx", "doc", "pptx", "ppt", "html"
+    metadata: dict | None        # Format-specific info (sheet_name, slide_number, etc.)
+```
+
+### Legacy Format Support
+
+#### Excel 97-2003 (.xls)
+
+Uses `xlrd` library directly — no conversion needed:
+
+```python
+from pdf_ocr import extract_tables_from_excel
+
+# Works with both formats
+tables = extract_tables_from_excel("legacy_report.xls")
+```
+
+#### Word/PowerPoint 97-2003 (.doc/.ppt)
+
+Requires **LibreOffice** installed for automatic conversion:
+
+```bash
+# macOS
+brew install --cask libreoffice
+
+# Ubuntu/Debian
+sudo apt install libreoffice
+
+# Windows
+# Download from https://www.libreoffice.org/download/
+```
+
+The library auto-detects LibreOffice location:
+- macOS: `/Applications/LibreOffice.app/Contents/MacOS/soffice`
+- Linux: `/usr/bin/libreoffice` or `/usr/bin/soffice`
+- Windows: `C:\Program Files\LibreOffice\program\soffice.exe`
+
+```python
+from pdf_ocr import extract_tables_from_word
+
+# Automatically converts .doc → .docx, then extracts
+tables = extract_tables_from_word("legacy_document.doc")
+```
+
+### Shared Semantic Heuristics
+
+All format extractors use the same semantic heuristics from `heuristics.py`:
+
+| Heuristic | Description | Applies To |
+|-----------|-------------|------------|
+| **TH1** | Cell type detection (date/number/string) | All formats |
+| **TH2** | Header type pattern (all-string row = header) | All formats |
+| **TH3** | Column type consistency | All formats |
+| **H7** | Header row estimation (bottom-up analysis) | All formats |
+
+Visual heuristics are format-specific:
+- **PDF**: Line/fill extraction from drawings
+- **XLSX**: Cell.fill, Cell.border, Cell.font
+- **DOCX**: cell.shading, table borders
+- **PPTX**: Shape fill/stroke
+- **HTML**: Inline styles, `<thead>` detection
+
+### Specific Format Extractors
+
+If you only need one format, use the specific extractors:
+
+```python
+# Modern formats only
+from pdf_ocr import (
+    extract_tables_from_xlsx,  # .xlsx only
+    extract_tables_from_docx,  # .docx only
+    extract_tables_from_pptx,  # .pptx only
+    extract_tables_from_html,  # .html
+)
+
+# Unified extractors (auto-detect old/new)
+from pdf_ocr import (
+    extract_tables_from_excel,      # .xlsx + .xls
+    extract_tables_from_word,       # .docx + .doc
+    extract_tables_from_powerpoint, # .pptx + .ppt
+)
+```
+
+---
+
 ## Installation
 
 ```bash
 pip install pdf-ocr
 
-# Optional dependencies
+# Optional dependencies for multi-format support
+pip install pdf-ocr[xlsx]        # Excel 2007+ (.xlsx)
+pip install pdf-ocr[xls]         # Excel 97-2003 (.xls)
+pip install pdf-ocr[excel]       # Both Excel formats
+pip install pdf-ocr[docx]        # Word (.docx, .doc with LibreOffice)
+pip install pdf-ocr[pptx]        # PowerPoint (.pptx, .ppt with LibreOffice)
+pip install pdf-ocr[html]        # HTML tables
+pip install pdf-ocr[formats]     # All document formats
 pip install pdf-ocr[dataframes]  # pandas + polars
 pip install pdf-ocr[parquet]     # pyarrow
 pip install pdf-ocr[all]         # everything
@@ -218,7 +413,7 @@ export ANTHROPIC_API_KEY="..."  # For Claude (if configured in BAML)
 
 ## Public API Summary
 
-### Core Functions
+### PDF Functions
 
 | Function | Input | Output |
 |---|---|---|
@@ -229,12 +424,35 @@ export ANTHROPIC_API_KEY="..."  # For Claude (if configured in BAML)
 | `interpret_table()` | Compressed text + schema | `dict[int, MappedTable]` |
 | `to_csv()` / `to_parquet()` / `to_pandas()` | Result + schema | Various formats |
 
+### Multi-Format Extractors
+
+| Function | Input | Output |
+|---|---|---|
+| `extract_tables_from_excel()` | .xlsx/.xls path | `list[StructuredTable]` |
+| `extract_tables_from_word()` | .docx/.doc path | `list[StructuredTable]` |
+| `extract_tables_from_powerpoint()` | .pptx/.ppt path | `list[StructuredTable]` |
+| `extract_tables_from_html()` | .html path or string | `list[StructuredTable]` |
+| `extract_tables_from_xlsx()` | .xlsx path only | `list[StructuredTable]` |
+| `extract_tables_from_docx()` | .docx path only | `list[StructuredTable]` |
+| `extract_tables_from_pptx()` | .pptx path only | `list[StructuredTable]` |
+
+### Shared Heuristic Functions
+
+| Function | Description |
+|---|---|
+| `detect_cell_type()` | Classify cell as DATE, NUMBER, ENUM, or STRING |
+| `detect_column_types()` | Get predominant type for each column |
+| `is_header_type_pattern()` | Check if row is all-strings (header-like) |
+| `estimate_header_rows()` | Estimate header count from grid structure |
+
 ### Types
 
 | Type | Description |
 |---|---|
 | `StructuredTable` | Table with metadata, column_names, data |
-| `TableMetadata` | page_number, table_index, section_label |
+| `GenericStructuredTable` | Cross-format StructuredTable from heuristics.py |
+| `TableMetadata` | page_number, table_index, section_label, sheet_name |
+| `CellType` | Enum: DATE, NUMBER, ENUM, STRING |
 | `CanonicalSchema` | Schema definition with columns |
 | `ColumnDef` | Column name, type, description, aliases, format |
 | `FilterMatch` | Page, title, search term, score |

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "pdf-ocr"
 version = "0.1.0"
-description = "Extract structured data from PDF documents via LLMs"
+description = "Extract structured data from PDF, XLSX, DOCX, PPTX, and HTML documents via LLMs"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -19,9 +19,39 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# DataFrame support
 dataframes = ["pandas>=2.0", "polars>=0.20"]
 parquet = ["pyarrow>=14.0"]
-all = ["pandas>=2.0", "polars>=0.20", "pyarrow>=14.0"]
+
+# Multi-format document extractors
+# Modern formats (Office 2007+)
+xlsx = ["openpyxl>=3.1"]
+docx = ["python-docx>=1.1"]
+pptx = ["python-pptx>=1.0"]
+html = ["selectolax>=0.3"]
+
+# Legacy formats (Office 97-2003) - requires xlrd; doc/ppt need LibreOffice for conversion
+xls = ["xlrd>=2.0"]
+excel = ["openpyxl>=3.1", "xlrd>=2.0"]  # Both xlsx and xls support
+
+# Bundles
+formats = [
+    "openpyxl>=3.1",
+    "xlrd>=2.0",
+    "python-docx>=1.1",
+    "python-pptx>=1.0",
+    "selectolax>=0.3",
+]
+all = [
+    "pandas>=2.0",
+    "polars>=0.20",
+    "pyarrow>=14.0",
+    "openpyxl>=3.1",
+    "xlrd>=2.0",
+    "python-docx>=1.1",
+    "python-pptx>=1.0",
+    "selectolax>=0.3",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pdf_ocr"]
