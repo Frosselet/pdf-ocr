@@ -18,6 +18,7 @@ from pathlib import Path
 import fitz  # PyMuPDF
 
 from pdf_ocr.spatial_text import (
+    FontSpan,
     PageLayout,
     VisualElements,
     VisualFill,
@@ -558,6 +559,438 @@ def _cross_validate_header_rows(
                 )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Font heuristics — cross-validation with text/visual heuristics
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FontHierarchyInfo:
+    """Font size hierarchy detected from spans (FH1).
+
+    Maps font sizes to structural roles (title, header, body, footnote).
+    """
+
+    size_tiers: list[float]  # Distinct size clusters, largest first
+    header_size: float | None  # Size associated with header zone
+    body_size: float | None  # Most common size in data zone
+
+
+@dataclass
+class FontBoldInfo:
+    """Bold pattern analysis (FH2).
+
+    Bold text often signals headers or labels.
+    """
+
+    header_bold_ratio: float  # Fraction of bold spans in header zone
+    data_bold_ratio: float  # Fraction of bold spans in data zone
+    bold_header_rows: list[int]  # Row indices where >50% spans are bold
+
+
+@dataclass
+class FontItalicInfo:
+    """Italic pattern analysis (FH3).
+
+    Italic often signals secondary content: captions, citations, metadata.
+    """
+
+    italic_positions: list[tuple[int, int]]  # (row, col) of italic spans
+    has_caption_below: bool  # Italic text below table area
+    metadata_rows: list[int]  # Rows that are entirely/mostly italic
+
+
+@dataclass
+class FontMonospaceInfo:
+    """Monospace pattern analysis (FH4).
+
+    Monospace fonts typically indicate structured data: codes, IDs, numbers.
+    """
+
+    monospace_columns: list[int]  # Column indices with >50% monospace
+    monospace_ratio: float  # Overall monospace span ratio
+
+
+@dataclass
+class FontColorInfo:
+    """Text color pattern analysis (FH5).
+
+    Colors encode semantics: red=error, blue=link, gray=secondary.
+    """
+
+    header_text_color: tuple[float, float, float] | None  # Most common header color
+    exception_colors: list[tuple[float, float, float]]  # Red, orange = warning
+    color_groups: dict[tuple[float, float, float], int]  # color -> count
+
+
+@dataclass
+class FontConsistencyInfo:
+    """Font family consistency analysis (FH6).
+
+    Multiple font families per column may indicate data quality issues.
+    """
+
+    header_font_family: str | None  # Normalized font family in headers
+    data_font_family: str | None  # Most common font family in data
+    inconsistent_columns: list[int]  # Columns with >2 font families
+
+
+@dataclass
+class FontValidation:
+    """Result of font heuristics analysis (FH1-FH6)."""
+
+    hierarchy: FontHierarchyInfo | None = None
+    bold: FontBoldInfo | None = None
+    italic: FontItalicInfo | None = None
+    monospace: FontMonospaceInfo | None = None
+    color: FontColorInfo | None = None
+    consistency: FontConsistencyInfo | None = None
+    has_font_data: bool = False
+
+
+def _normalize_font_family(font_name: str) -> str:
+    """Normalize font name to family (strip style suffixes).
+
+    E.g., "Arial-BoldMT" -> "arial", "TimesNewRomanPS-ItalicMT" -> "timesnewromanps"
+    """
+    # Remove common style suffixes
+    name = font_name.lower()
+    for suffix in ("-bold", "-italic", "-regular", "-medium", "-light", "mt", "-oblique"):
+        name = name.replace(suffix, "")
+    # Remove any remaining suffixes after the last hyphen
+    if "-" in name:
+        name = name.rsplit("-", 1)[0]
+    return name.strip()
+
+
+def _cluster_sizes(sizes: list[float], gap_threshold: float = 0.2) -> list[float]:
+    """Cluster font sizes into tiers.
+
+    Adjacent sizes within gap_threshold proportion of each other are merged.
+    Returns cluster representatives (means), sorted largest first.
+    """
+    if not sizes:
+        return []
+
+    sorted_sizes = sorted(set(sizes), reverse=True)
+    if len(sorted_sizes) == 1:
+        return sorted_sizes
+
+    clusters: list[list[float]] = [[sorted_sizes[0]]]
+    for size in sorted_sizes[1:]:
+        cluster_mean = sum(clusters[-1]) / len(clusters[-1])
+        # Gap threshold: 20% difference means different tier
+        if (cluster_mean - size) / cluster_mean > gap_threshold:
+            clusters.append([size])
+        else:
+            clusters[-1].append(size)
+
+    return [sum(c) / len(c) for c in clusters]
+
+
+def _detect_font_hierarchy(
+    font_spans: dict[int, list[tuple[int, FontSpan]]],
+    row_y_positions: list[float],
+    header_row_estimate: int,
+) -> FontHierarchyInfo | None:
+    """FH1: Detect font size hierarchy.
+
+    Larger font = more prominent. Cluster sizes into tiers and map to roles.
+    """
+    if not font_spans:
+        return None
+
+    all_sizes: list[float] = []
+    header_sizes: list[float] = []
+    data_sizes: list[float] = []
+
+    for row_idx, spans in font_spans.items():
+        for _, font in spans:
+            all_sizes.append(font.size)
+            if row_idx < header_row_estimate:
+                header_sizes.append(font.size)
+            else:
+                data_sizes.append(font.size)
+
+    if not all_sizes:
+        return None
+
+    size_tiers = _cluster_sizes(all_sizes)
+
+    # Header size = most common in header zone (or largest if no clear winner)
+    header_size = None
+    if header_sizes:
+        size_counts: Counter[float] = Counter(header_sizes)
+        header_size = size_counts.most_common(1)[0][0]
+
+    # Body size = most common in data zone
+    body_size = None
+    if data_sizes:
+        size_counts = Counter(data_sizes)
+        body_size = size_counts.most_common(1)[0][0]
+
+    return FontHierarchyInfo(
+        size_tiers=size_tiers,
+        header_size=header_size,
+        body_size=body_size,
+    )
+
+
+def _detect_bold_headers(
+    font_spans: dict[int, list[tuple[int, FontSpan]]],
+    header_row_estimate: int,
+) -> FontBoldInfo | None:
+    """FH2: Detect bold header pattern.
+
+    Bold = labels, not values. High bold ratio in headers, low in data = pattern.
+    """
+    if not font_spans:
+        return None
+
+    header_total = 0
+    header_bold = 0
+    data_total = 0
+    data_bold = 0
+    bold_row_counts: dict[int, tuple[int, int]] = {}  # row -> (bold_count, total)
+
+    for row_idx, spans in font_spans.items():
+        row_bold = 0
+        row_total = len(spans)
+        for _, font in spans:
+            if font.is_bold:
+                row_bold += 1
+                if row_idx < header_row_estimate:
+                    header_bold += 1
+                else:
+                    data_bold += 1
+
+        if row_idx < header_row_estimate:
+            header_total += row_total
+        else:
+            data_total += row_total
+
+        bold_row_counts[row_idx] = (row_bold, row_total)
+
+    header_bold_ratio = header_bold / header_total if header_total > 0 else 0.0
+    data_bold_ratio = data_bold / data_total if data_total > 0 else 0.0
+
+    # Rows where >50% spans are bold
+    bold_header_rows = [
+        row_idx
+        for row_idx, (bold_count, total) in bold_row_counts.items()
+        if total > 0 and bold_count / total > 0.5
+    ]
+
+    return FontBoldInfo(
+        header_bold_ratio=header_bold_ratio,
+        data_bold_ratio=data_bold_ratio,
+        bold_header_rows=sorted(bold_header_rows),
+    )
+
+
+def _detect_italic_patterns(
+    font_spans: dict[int, list[tuple[int, FontSpan]]],
+    row_y_positions: list[float],
+    header_row_estimate: int,
+) -> FontItalicInfo | None:
+    """FH3: Detect italic pattern.
+
+    Italic = secondary content (captions, citations, metadata).
+    """
+    if not font_spans:
+        return None
+
+    italic_positions: list[tuple[int, int]] = []
+    row_italic_ratios: dict[int, float] = {}
+
+    for row_idx, spans in font_spans.items():
+        italic_count = 0
+        for col, font in spans:
+            if font.is_italic:
+                italic_positions.append((row_idx, col))
+                italic_count += 1
+        if spans:
+            row_italic_ratios[row_idx] = italic_count / len(spans)
+
+    # Check for caption below table: italic text in last few rows
+    max_row = max(font_spans.keys()) if font_spans else 0
+    has_caption_below = any(
+        row_italic_ratios.get(ri, 0) > 0.5
+        for ri in range(max(0, max_row - 2), max_row + 1)
+    )
+
+    # Rows that are entirely/mostly italic (>80%)
+    metadata_rows = [
+        row_idx
+        for row_idx, ratio in row_italic_ratios.items()
+        if ratio > 0.8
+    ]
+
+    return FontItalicInfo(
+        italic_positions=italic_positions,
+        has_caption_below=has_caption_below,
+        metadata_rows=sorted(metadata_rows),
+    )
+
+
+def _detect_monospace_patterns(
+    font_spans: dict[int, list[tuple[int, FontSpan]]],
+    header_row_estimate: int,
+) -> FontMonospaceInfo | None:
+    """FH4: Detect monospace pattern.
+
+    Monospace = structured data (codes, IDs, numbers).
+    """
+    if not font_spans:
+        return None
+
+    # Track monospace by column (in data rows only)
+    column_monospace: Counter[int] = Counter()
+    column_total: Counter[int] = Counter()
+    total_spans = 0
+    monospace_spans = 0
+
+    for row_idx, spans in font_spans.items():
+        if row_idx < header_row_estimate:
+            continue  # Skip headers
+        for col, font in spans:
+            column_total[col] += 1
+            total_spans += 1
+            if font.is_monospace:
+                column_monospace[col] += 1
+                monospace_spans += 1
+
+    # Columns with >50% monospace
+    monospace_columns = [
+        col
+        for col in column_total
+        if column_total[col] > 0 and column_monospace[col] / column_total[col] > 0.5
+    ]
+
+    monospace_ratio = monospace_spans / total_spans if total_spans > 0 else 0.0
+
+    return FontMonospaceInfo(
+        monospace_columns=sorted(monospace_columns),
+        monospace_ratio=monospace_ratio,
+    )
+
+
+def _detect_color_patterns(
+    font_spans: dict[int, list[tuple[int, FontSpan]]],
+    header_row_estimate: int,
+) -> FontColorInfo | None:
+    """FH5: Detect text color patterns.
+
+    Colors encode semantics: red=error, blue=link, gray=secondary.
+    """
+    if not font_spans:
+        return None
+
+    header_colors: Counter[tuple[float, float, float]] = Counter()
+    all_colors: Counter[tuple[float, float, float]] = Counter()
+
+    # Exception colors (red/orange hues)
+    exception_colors: set[tuple[float, float, float]] = set()
+
+    for row_idx, spans in font_spans.items():
+        for _, font in spans:
+            color = font.color
+            if color is None:
+                color = (0.0, 0.0, 0.0)  # Black
+
+            all_colors[color] += 1
+            if row_idx < header_row_estimate:
+                header_colors[color] += 1
+
+            # Detect exception colors (red/orange: high R, low-medium G, low B)
+            r, g, b = color
+            if r > 0.6 and g < 0.5 and b < 0.3:
+                exception_colors.add(color)
+
+    header_text_color = header_colors.most_common(1)[0][0] if header_colors else None
+
+    return FontColorInfo(
+        header_text_color=header_text_color,
+        exception_colors=list(exception_colors),
+        color_groups=dict(all_colors),
+    )
+
+
+def _detect_font_consistency(
+    font_spans: dict[int, list[tuple[int, FontSpan]]],
+    header_row_estimate: int,
+) -> FontConsistencyInfo | None:
+    """FH6: Detect font family consistency.
+
+    >2 font families per column may indicate data quality issues.
+    """
+    if not font_spans:
+        return None
+
+    header_families: Counter[str] = Counter()
+    data_families: Counter[str] = Counter()
+    column_families: dict[int, set[str]] = {}
+
+    for row_idx, spans in font_spans.items():
+        for col, font in spans:
+            family = _normalize_font_family(font.font_name)
+            if row_idx < header_row_estimate:
+                header_families[family] += 1
+            else:
+                data_families[family] += 1
+                column_families.setdefault(col, set()).add(family)
+
+    header_font_family = header_families.most_common(1)[0][0] if header_families else None
+    data_font_family = data_families.most_common(1)[0][0] if data_families else None
+
+    # Columns with >2 distinct font families
+    inconsistent_columns = [
+        col for col, families in column_families.items() if len(families) > 2
+    ]
+
+    return FontConsistencyInfo(
+        header_font_family=header_font_family,
+        data_font_family=data_font_family,
+        inconsistent_columns=sorted(inconsistent_columns),
+    )
+
+
+def _analyze_font_structure(
+    font_spans: dict[int, list[tuple[int, FontSpan]]],
+    row_y_positions: list[float],
+    header_row_estimate: int,
+) -> FontValidation:
+    """Run all font heuristics (FH1-FH6) on extracted font spans.
+
+    Args:
+        font_spans: Font data by row (row_idx -> list of (col, FontSpan))
+        row_y_positions: Y positions of text rows
+        header_row_estimate: Estimated number of header rows
+
+    Returns:
+        FontValidation with results from each heuristic
+    """
+    if not font_spans:
+        return FontValidation(has_font_data=False)
+
+    hierarchy = _detect_font_hierarchy(font_spans, row_y_positions, header_row_estimate)
+    bold = _detect_bold_headers(font_spans, header_row_estimate)
+    italic = _detect_italic_patterns(font_spans, row_y_positions, header_row_estimate)
+    monospace = _detect_monospace_patterns(font_spans, header_row_estimate)
+    color = _detect_color_patterns(font_spans, header_row_estimate)
+    consistency = _detect_font_consistency(font_spans, header_row_estimate)
+
+    return FontValidation(
+        hierarchy=hierarchy,
+        bold=bold,
+        italic=italic,
+        monospace=monospace,
+        color=color,
+        consistency=consistency,
+        has_font_data=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1926,6 +2359,34 @@ def _compress_page_structured(
                     page_number,
                 )
 
+    # === FONT ANALYSIS ===
+    # Run font heuristics for cross-validation (parallel channel)
+    font_validation: FontValidation | None = None
+    if layout.font_spans:
+        # Estimate header rows from visual cues or default to 2
+        header_row_estimate = 2
+        if visual_validation and visual_validation.header:
+            header_row_estimate = max(visual_validation.header.header_fill_rows) + 1
+
+        font_validation = _analyze_font_structure(
+            layout.font_spans,
+            layout.row_y_positions,
+            header_row_estimate,
+        )
+
+        if font_validation.has_font_data:
+            logger.debug(
+                "Font heuristics detected (page %d): hierarchy=%s, bold=%s, italic=%s, "
+                "monospace=%s, color=%s, consistency=%s",
+                page_number,
+                font_validation.hierarchy is not None,
+                font_validation.bold is not None,
+                font_validation.italic is not None,
+                font_validation.monospace is not None,
+                font_validation.color is not None,
+                font_validation.consistency is not None,
+            )
+
     # === FALLBACK: no tables detected, ask the LLM ===
     if not has_tables and refine_headers:
         from pdf_ocr.spatial_text import _render_page_grid
@@ -2345,6 +2806,33 @@ def _compress_page(
                     "Visual grid detected (VH1) but no TABLE region found by text heuristics — "
                     "possible text heuristic gap"
                 )
+
+    # === FONT ANALYSIS ===
+    # Run font heuristics for cross-validation (parallel channel)
+    font_validation: FontValidation | None = None
+    if layout.font_spans:
+        # Estimate header rows from visual cues or default to 2
+        header_row_estimate = 2
+        if visual_validation and visual_validation.header:
+            header_row_estimate = max(visual_validation.header.header_fill_rows) + 1
+
+        font_validation = _analyze_font_structure(
+            layout.font_spans,
+            layout.row_y_positions,
+            header_row_estimate,
+        )
+
+        if font_validation.has_font_data:
+            logger.debug(
+                "Font heuristics detected: hierarchy=%s, bold=%s, italic=%s, "
+                "monospace=%s, color=%s, consistency=%s",
+                font_validation.hierarchy is not None,
+                font_validation.bold is not None,
+                font_validation.italic is not None,
+                font_validation.monospace is not None,
+                font_validation.color is not None,
+                font_validation.consistency is not None,
+            )
 
     # === FALLBACK: no tables detected, ask the LLM ===
     if not has_tables and refine_headers:

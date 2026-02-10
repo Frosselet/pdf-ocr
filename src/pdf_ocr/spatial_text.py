@@ -52,6 +52,77 @@ class VisualElements:
     fills: list[VisualFill] = field(default_factory=list)
 
 
+@dataclass
+class FontSpan:
+    """Font attributes for a text span.
+
+    PyMuPDF provides 11 attributes per span. We extract the 6 most useful
+    for structure detection: size, font name, bold/italic/monospace flags,
+    and text color.
+    """
+
+    size: float  # Font size in points
+    font_name: str  # Raw font name from PDF
+    is_bold: bool  # From flags (0x10) or font name heuristic
+    is_italic: bool  # From flags (0x01) or font name heuristic
+    is_monospace: bool  # From flags (0x20) or font name heuristic
+    color: tuple[float, float, float] | None  # RGB 0-1, None if black
+
+
+def _int_to_rgb(color_int: int) -> tuple[float, float, float]:
+    """Convert PyMuPDF color integer to RGB tuple (0-1 range).
+
+    PyMuPDF encodes colors as 24-bit integers: 0xRRGGBB.
+    """
+    r = ((color_int >> 16) & 0xFF) / 255.0
+    g = ((color_int >> 8) & 0xFF) / 255.0
+    b = (color_int & 0xFF) / 255.0
+    return (r, g, b)
+
+
+def _extract_font_span(span: dict) -> FontSpan:
+    """Create FontSpan from PyMuPDF span dictionary.
+
+    Extracts font attributes from span dict which contains:
+    - "size": float (font size in points)
+    - "font": str (font name)
+    - "flags": int (bitmask: 0x01=italic, 0x10=bold, 0x20=monospace)
+    - "color": int (RGB as 0xRRGGBB)
+    """
+    size = span.get("size", 0.0)
+    font_name = span.get("font", "")
+    flags = span.get("flags", 0)
+    color_int = span.get("color", 0)
+
+    # Extract flags
+    is_italic = bool(flags & 0x01)
+    is_bold = bool(flags & 0x10)
+    is_monospace = bool(flags & 0x20)
+
+    # Font name heuristics as fallback (some PDFs don't set flags correctly)
+    font_lower = font_name.lower()
+    if not is_bold and any(kw in font_lower for kw in ("bold", "black", "heavy")):
+        is_bold = True
+    if not is_italic and any(kw in font_lower for kw in ("italic", "oblique")):
+        is_italic = True
+    if not is_monospace and any(kw in font_lower for kw in ("mono", "courier", "consolas", "menlo")):
+        is_monospace = True
+
+    # Convert color - None if black (most common, saves memory)
+    color: tuple[float, float, float] | None = None
+    if color_int != 0:
+        color = _int_to_rgb(color_int)
+
+    return FontSpan(
+        size=size,
+        font_name=font_name,
+        is_bold=is_bold,
+        is_italic=is_italic,
+        is_monospace=is_monospace,
+        color=color,
+    )
+
+
 def _open_pdf(pdf_input: str | bytes | Path) -> fitz.Document:
     """Open a PDF from various input types.
 
@@ -75,6 +146,8 @@ class PageLayout:
     cell_w: float = 6.0
     visual: VisualElements | None = None  # Visual elements (lines, fills)
     row_y_positions: list[float] = field(default_factory=list)  # Actual Y coordinates
+    # Font data parallel to rows: row_idx -> list of (col, FontSpan)
+    font_spans: dict[int, list[tuple[int, FontSpan]]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +287,7 @@ def _extract_page_layout(
                     "x": span["origin"][0],
                     "y": span["origin"][1],
                     "bbox": span["bbox"],
+                    "font": _extract_font_span(span),
                 })
 
     if not spans:
@@ -250,13 +324,15 @@ def _extract_page_layout(
             y_to_row[y] = row_idx
         row_y_positions.append(sum(cluster) / len(cluster))
 
-    # Group spans by row.
+    # Group spans by row (both text and font data).
     x_min = min(s["x"] for s in spans)
     rows: dict[int, list[tuple[int, str]]] = {}
+    font_spans_by_row: dict[int, list[tuple[int, FontSpan]]] = {}
     for s in spans:
         row_idx = y_to_row[s["y"]]
         col = round((s["x"] - x_min) / cell_w)
         rows.setdefault(row_idx, []).append((col, s["text"]))
+        font_spans_by_row.setdefault(row_idx, []).append((col, s["font"]))
 
     # Extract visual elements if requested
     visual = _extract_visual_elements(page) if extract_visual else None
@@ -267,6 +343,7 @@ def _extract_page_layout(
         cell_w=cell_w,
         visual=visual,
         row_y_positions=row_y_positions,
+        font_spans=font_spans_by_row,
     )
 
 

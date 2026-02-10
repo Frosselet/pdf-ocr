@@ -472,6 +472,105 @@ def _is_header_type_pattern(row):
 
 ---
 
+## Font Heuristics (Cross-Validation)
+
+Font heuristics extract typographic signals from PyMuPDF span attributes and cross-validate with text-based and visual structure detection.
+
+**Philosophy**: Typography encodes intent before content. Larger text signals hierarchy, bold signals importance, italic signals secondary content, color signals semantics. These are parallel validation channels, not tie-breakers.
+
+**Data source**: PyMuPDF provides 11 attributes per span. We extract 6: size, font name, bold/italic/monospace flags, and text color. The rest are discarded.
+
+---
+
+### FH1: Size-Based Hierarchy (`_detect_font_hierarchy`)
+
+**Holistic**: Larger font = more prominent (titles > headers > body > footnotes).
+
+**Detection**:
+- Collect all font sizes across spans
+- Cluster into tiers (>20% gap between clusters)
+- Map tiers to zones: largest in header zone = header size, most common in data zone = body size
+
+**Cross-validation**:
+- ✓ Larger size in header zone matches text header estimate → confirmed
+- ⚠ Size tier boundary doesn't match text header boundary → investigate
+
+---
+
+### FH2: Bold Header Detection (`_detect_bold_headers`)
+
+**Holistic**: Bold = labels, not values. Headers are typically bold; data is not.
+
+**Detection**:
+- Calculate bold ratio in header zone vs data zone
+- Track rows where >50% of spans are bold
+
+**Cross-validation**:
+- ✓ High bold ratio in headers (>60%), low in data (<30%) → strong header pattern
+- ⚠ Bold text in data zone → possible sub-headers or exception highlights
+
+---
+
+### FH3: Italic Metadata Detection (`_detect_italic_patterns`)
+
+**Holistic**: Italic = secondary content (captions, citations, notes, metadata).
+
+**Detection**:
+- Track all italic span positions (row, col)
+- Check for captions below table area (italic in last few rows)
+- Identify metadata rows (>80% italic)
+
+**Cross-validation**:
+- ✓ Italic row below table → caption
+- ⚠ Italic row at top → possible title/subtitle
+
+---
+
+### FH4: Monospace Data Detection (`_detect_monospace_patterns`)
+
+**Holistic**: Monospace = structured data (codes, IDs, numbers, timestamps).
+
+**Detection**:
+- Detect monospace by flags (0x20) or font name (Courier, Consolas, Menlo, etc.)
+- Track monospace ratio per column
+- Columns with >50% monospace = structured data columns
+
+**Cross-validation**:
+- ✓ Monospace columns match NUMBER/DATE type pattern → confirmed
+- ⚠ Monospace in STRING-typed column → possible codes/IDs
+
+---
+
+### FH5: Text Color Semantics (`_detect_color_patterns`)
+
+**Holistic**: Color encodes meaning — red = error/warning, blue = link, gray = secondary.
+
+**Detection**:
+- Group spans by text color
+- Identify most common header color
+- Detect exception colors (red/orange hues: high R, low G, low B)
+
+**Cross-validation**:
+- ✓ Non-black color in header zone → styled headers
+- ⚠ Red/orange in data zone → exception highlighting (VH6 parallel)
+
+---
+
+### FH6: Font Family Consistency (`_detect_font_consistency`)
+
+**Holistic**: Consistent fonts signal clean data; >2 families per column may indicate data quality issues.
+
+**Detection**:
+- Normalize font names to families (strip style suffixes like -Bold, -Italic)
+- Track font families per column
+- Flag columns with >2 distinct families
+
+**Cross-validation**:
+- ✓ Single family in header, single family in data → clean structure
+- ⚠ Multiple families in same column → mixed sources or OCR artifacts
+
+---
+
 ## API
 
 ### Markdown Output

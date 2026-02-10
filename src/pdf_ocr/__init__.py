@@ -2,6 +2,7 @@
 
 from pdf_ocr import serialize
 from pdf_ocr.compress import (
+    FontValidation,
     StructuredTable,
     TableMetadata,
     compress_spatial_text,
@@ -27,6 +28,7 @@ from pdf_ocr.serialize import (
     to_tsv,
 )
 from pdf_ocr.spatial_text import (
+    FontSpan,
     PageLayout,
     VisualElements,
     VisualFill,
@@ -38,6 +40,8 @@ __all__ = [
     "CanonicalSchema",
     "ColumnDef",
     "FilterMatch",
+    "FontSpan",
+    "FontValidation",
     "PageLayout",
     "SerializationValidationError",
     "StructuredTable",
