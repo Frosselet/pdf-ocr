@@ -45,6 +45,7 @@ from baml_client.async_client import b as b_async
 from baml_client.type_builder import TypeBuilder
 from baml_py import Image
 
+from pdf_ocr.heuristics import MetadataFieldDef
 from pdf_ocr.spatial_text import _open_pdf
 
 DEFAULT_MODEL = "openai/gpt-4o"
@@ -82,9 +83,16 @@ class ColumnDef:
 
 @dataclass
 class CanonicalSchema:
-    """User-defined canonical schema for table mapping."""
+    """User-defined canonical schema for table mapping.
+
+    Attributes:
+        columns: Column definitions for table data
+        metadata: Optional metadata field definitions for document-level extraction
+        description: Optional schema description
+    """
 
     columns: list[ColumnDef]
+    metadata: list[MetadataFieldDef] = field(default_factory=list)
     description: str | None = None
 
     @classmethod
@@ -103,9 +111,26 @@ class CanonicalSchema:
                         "aliases": ["Port"]
                     },
                     ...
+                ],
+                "metadata": [
+                    {
+                        "name": "publication_date",
+                        "category": "temporal",
+                        "required": true,
+                        "zones": ["title_page"],
+                        "patterns": ["As of\\\\s+(.+?\\\\d{4})"]
+                    },
+                    ...
                 ]
             }
         """
+        from pdf_ocr.heuristics import (
+            FallbackStrategy,
+            MetadataCategory,
+            MetadataFieldDef,
+            SearchZone,
+        )
+
         columns = [
             ColumnDef(
                 name=c["name"],
@@ -116,7 +141,26 @@ class CanonicalSchema:
             )
             for c in data["columns"]
         ]
-        return cls(columns=columns, description=data.get("description"))
+
+        metadata_list: list[MetadataFieldDef] = []
+        for m in data.get("metadata", []):
+            metadata_list.append(
+                MetadataFieldDef(
+                    name=m["name"],
+                    category=MetadataCategory(m.get("category", "temporal")),
+                    required=m.get("required", False),
+                    zones=[SearchZone(z) for z in m.get("zones", [])],
+                    patterns=m.get("patterns", []),
+                    fallback=FallbackStrategy(m.get("fallback", "flag")),
+                    default=m.get("default"),
+                )
+            )
+
+        return cls(
+            columns=columns,
+            metadata=metadata_list,
+            description=data.get("description"),
+        )
 
 
 # ─── TypeBuilder helper ──────────────────────────────────────────────────────

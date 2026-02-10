@@ -10,6 +10,8 @@ Heuristics included:
 - TH2: Header type pattern (all-string rows are likely headers)
 - TH3: Column type consistency
 - H7: Header row estimation via bottom-up span-count analysis
+- RH1: Temporal pattern detection (dates, periods, fiscal years)
+- RH4: Unit/currency pattern detection (scale, currency codes)
 
 Geometry heuristics (y-clustering, x-position alignment) remain in format-specific
 extractors since they depend on spatial coordinates.
@@ -19,8 +21,78 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
+
+
+# ---------------------------------------------------------------------------
+# Metadata retrieval types (for search & extract feature)
+# ---------------------------------------------------------------------------
+
+
+class MetadataCategory(Enum):
+    """Categories of document metadata for retrieval heuristics.
+
+    Each category has associated patterns and typical search zones.
+    """
+
+    TEMPORAL = "temporal"  # RH1: Dates, periods, fiscal years
+    ENTITY = "entity"  # RH2: Company names, identifiers
+    TABLE_IDENTITY = "table_identity"  # RH3: Table titles, section names
+    TABLE_CONTEXT = "table_context"  # RH4: Units, currency, scale
+    FOOTNOTE = "footnote"  # RH5: Footnotes, disclaimers
+
+
+class SearchZone(Enum):
+    """Zones within a document where metadata is commonly found.
+
+    Used to focus pattern matching on high-probability regions.
+    """
+
+    TITLE_PAGE = "title_page"  # First page header area (top 40%)
+    PAGE_HEADER = "page_header"  # Top 15% of any page
+    PAGE_FOOTER = "page_footer"  # Bottom 15% of any page
+    TABLE_CAPTION = "table_caption"  # Text immediately above table
+    COLUMN_HEADER = "column_header"  # Within table headers
+    TABLE_FOOTER = "table_footer"  # Below table
+    ANYWHERE = "anywhere"  # Full document scan
+
+
+class FallbackStrategy(Enum):
+    """Strategies for handling missing required metadata.
+
+    When a required metadata field cannot be found via pattern matching,
+    these strategies determine the fallback behavior.
+    """
+
+    INFER = "infer"  # Pattern-based guess from related context
+    DEFAULT = "default"  # Use schema-defined default value
+    PROMPT = "prompt"  # Ask user for the value
+    FLAG = "flag"  # Return with _missing marker, let caller handle
+
+
+@dataclass
+class MetadataFieldDef:
+    """Definition of a metadata field to extract from a document.
+
+    Attributes:
+        name: Field name in the result dict
+        category: Metadata category (determines default patterns)
+        required: If True, validation fails when field is missing
+        zones: Search zones to scan (order determines priority)
+        patterns: Regex patterns with capture groups for the value
+        fallback: Strategy when field is not found
+        default: Default value when fallback is DEFAULT
+    """
+
+    name: str
+    category: MetadataCategory
+    required: bool = False
+    zones: list[SearchZone] = field(default_factory=list)
+    patterns: list[str] = field(default_factory=list)  # Regex patterns
+    fallback: FallbackStrategy = FallbackStrategy.FLAG
+    default: Any = None
 
 
 # ---------------------------------------------------------------------------
@@ -357,3 +429,173 @@ def build_column_names_from_headers(header_rows: list[list[str]]) -> list[str]:
         column_names.append(" ".join(deduped_words))
 
     return column_names
+
+
+# ---------------------------------------------------------------------------
+# RH1: Temporal pattern detection
+# ---------------------------------------------------------------------------
+
+# Patterns for detecting temporal metadata (dates, periods, fiscal years)
+# Each tuple: (compiled regex, pattern name)
+_TEMPORAL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # "As of" date patterns
+    (re.compile(r"[Aa]s\s+of\s+([A-Za-z]+\s+\d{1,2},?\s+\d{4})"), "as_of_date"),
+    (re.compile(r"[Aa]s\s+of\s+(\d{1,2}/\d{1,2}/\d{2,4})"), "as_of_date"),
+    (re.compile(r"[Aa]s\s+of\s+(\d{4}-\d{2}-\d{2})"), "as_of_date"),
+    # Period end patterns
+    (
+        re.compile(
+            r"[Ff]or\s+the\s+(?:year|period|quarter)\s+ended?\s+([A-Za-z]+\s+\d{1,2},?\s+\d{4})"
+        ),
+        "period_end",
+    ),
+    (
+        re.compile(
+            r"[Ff]or\s+the\s+(?:year|period|quarter)\s+ended?\s+(\d{1,2}/\d{1,2}/\d{2,4})"
+        ),
+        "period_end",
+    ),
+    # Quarter patterns
+    (re.compile(r"\b(Q[1-4])\s*(?:FY)?(\d{2,4})"), "quarter"),
+    (re.compile(r"\b(1st|2nd|3rd|4th)\s+[Qq]uarter\s+(\d{4})"), "quarter"),
+    # Fiscal year patterns
+    (re.compile(r"\bFY\s*(\d{2,4})"), "fiscal_year"),
+    (re.compile(r"\b[Ff]iscal\s+[Yy]ear\s+(\d{4})"), "fiscal_year"),
+    # Year-month patterns
+    (re.compile(r"\b([A-Za-z]+)\s+(\d{4})\b"), "year_month"),
+    # Date range patterns
+    (
+        re.compile(
+            r"(\d{1,2}/\d{1,2}/\d{2,4})\s*[-–—to]+\s*(\d{1,2}/\d{1,2}/\d{2,4})"
+        ),
+        "date_range",
+    ),
+    (
+        re.compile(
+            r"([A-Za-z]+\s+\d{1,2},?\s+\d{4})\s*[-–—to]+\s*([A-Za-z]+\s+\d{1,2},?\s+\d{4})"
+        ),
+        "date_range",
+    ),
+]
+
+
+def detect_temporal_patterns(text: str) -> list[tuple[str, str, str]]:
+    """RH1: Detect temporal patterns in text.
+
+    Scans text for date, period, quarter, and fiscal year patterns.
+
+    Args:
+        text: Text to scan for temporal patterns
+
+    Returns:
+        List of (matched_text, pattern_name, captured_value) tuples.
+        For patterns with multiple groups, captured_value is space-joined.
+    """
+    results: list[tuple[str, str, str]] = []
+
+    for pattern, name in _TEMPORAL_PATTERNS:
+        for match in pattern.finditer(text):
+            matched_text = match.group(0)
+            groups = match.groups()
+            # Join multiple capture groups (e.g., quarter + year)
+            captured = " ".join(g for g in groups if g)
+            results.append((matched_text, name, captured))
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# RH4: Unit/currency pattern detection
+# ---------------------------------------------------------------------------
+
+# Patterns for detecting unit and currency metadata
+_UNIT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # Scale patterns
+    (re.compile(r"\(in\s+(millions?|thousands?|billions?)\)", re.IGNORECASE), "scale"),
+    (
+        re.compile(
+            r"\b(millions?|thousands?|billions?)\s+of\s+(?:dollars|euros|pounds)",
+            re.IGNORECASE,
+        ),
+        "scale",
+    ),
+    (re.compile(r"(?:USD|EUR|GBP)\s+(000s?|MM|M|K|B)", re.IGNORECASE), "scale"),
+    # Currency code patterns
+    (re.compile(r"\b(USD|EUR|GBP|JPY|CHF|CAD|AUD|CNY|INR)\b"), "currency_code"),
+    # Currency symbol patterns
+    (re.compile(r"[\$€£¥]"), "currency_symbol"),
+    # Percentage patterns
+    (re.compile(r"\b(percentage|percent|%)\b", re.IGNORECASE), "percentage"),
+    # Unit patterns
+    (re.compile(r"\b(metric\s+tons?|tonnes?|MT|kg|lbs?)\b", re.IGNORECASE), "unit"),
+    (
+        re.compile(r"\b(shares?|units?|contracts?|lots?)\b", re.IGNORECASE),
+        "unit",
+    ),
+]
+
+
+def detect_unit_patterns(text: str) -> list[tuple[str, str, str]]:
+    """RH4: Detect unit and currency patterns in text.
+
+    Scans text for scale indicators (millions, thousands), currency codes/symbols,
+    and unit specifications.
+
+    Args:
+        text: Text to scan for unit patterns
+
+    Returns:
+        List of (matched_text, pattern_name, captured_value) tuples.
+        For currency symbols, captured_value is the symbol itself.
+    """
+    results: list[tuple[str, str, str]] = []
+
+    for pattern, name in _UNIT_PATTERNS:
+        for match in pattern.finditer(text):
+            matched_text = match.group(0)
+            # Get first capture group if exists, else full match
+            captured = match.group(1) if match.lastindex else matched_text
+            results.append((matched_text, name, captured))
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# RH5: Footnote marker detection
+# ---------------------------------------------------------------------------
+
+
+def detect_footnote_markers(text: str) -> list[tuple[str, int | None]]:
+    """RH5: Detect footnote markers in text.
+
+    Finds superscript-style markers: ¹²³, [1], (1), *, †, ‡
+
+    Args:
+        text: Text to scan for footnote markers
+
+    Returns:
+        List of (marker_text, number_or_none) tuples.
+        Number is extracted from numeric markers, None for symbol markers.
+    """
+    results: list[tuple[str, int | None]] = []
+
+    # Unicode superscripts
+    superscript_pattern = re.compile(r"[¹²³⁴⁵⁶⁷⁸⁹⁰]+")
+    for match in superscript_pattern.finditer(text):
+        marker = match.group(0)
+        # Convert superscripts to number
+        trans = str.maketrans("¹²³⁴⁵⁶⁷⁸⁹⁰", "1234567890")
+        num_str = marker.translate(trans)
+        results.append((marker, int(num_str) if num_str.isdigit() else None))
+
+    # Bracketed numbers: [1], (1), {1}
+    bracket_pattern = re.compile(r"[\[\({\{](\d+)[\]\)}]")
+    for match in bracket_pattern.finditer(text):
+        results.append((match.group(0), int(match.group(1))))
+
+    # Symbol markers
+    symbol_pattern = re.compile(r"[*†‡§¶#]+")
+    for match in symbol_pattern.finditer(text):
+        results.append((match.group(0), None))
+
+    return results

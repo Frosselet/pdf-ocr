@@ -66,6 +66,8 @@ PDF
  │
  ├─► filter.py ──────► Filter pages by fuzzy title matching
  │
+ ├─► retrieval.py ───► Fast metadata extraction (dates, currency, units)
+ │
  ├─► interpret.py ───► LLM-powered schema mapping
  │
  └─► serialize.py ───► Export to CSV/Parquet/DataFrames
@@ -110,6 +112,92 @@ for table in tables:
         print(row)
 ```
 
+## Search & Extract (Metadata + Tables)
+
+Extract document metadata (dates, currency, units) before LLM interpretation:
+
+```python
+from pdf_ocr import (
+    search_and_extract,
+    CanonicalSchema,
+    ColumnDef,
+    MetadataFieldDef,
+    MetadataCategory,
+    SearchZone,
+    FallbackStrategy,
+)
+
+# Define schema with metadata fields
+schema = CanonicalSchema(
+    columns=[
+        ColumnDef("vessel", "string", "Vessel name"),
+        ColumnDef("quantity", "int", "Tonnage"),
+    ],
+    metadata=[
+        MetadataFieldDef(
+            name="publication_date",
+            category=MetadataCategory.TEMPORAL,
+            required=True,
+            zones=[SearchZone.TITLE_PAGE, SearchZone.PAGE_HEADER],
+            patterns=[r"As of\s+(.+?\d{4})"],
+            fallback=FallbackStrategy.DEFAULT,
+            default="2025-01-01",
+        ),
+        MetadataFieldDef(
+            name="currency",
+            category=MetadataCategory.TABLE_CONTEXT,
+            zones=[SearchZone.ANYWHERE],
+        ),
+    ],
+)
+
+# Extract metadata + tables in one call
+result = search_and_extract("document.pdf", schema)
+
+# Check validation
+print(f"Validation passed: {result.validation.passed}")
+print(f"Missing fields: {result.validation.missing}")
+
+# Access metadata
+for name, meta in result.metadata.items():
+    print(f"{name}: {meta.value} (confidence: {meta.confidence})")
+
+# Access tables (same as interpret_table result)
+for page, table in result.tables.items():
+    print(f"Page {page}: {len(table.records)} records")
+```
+
+### Metadata Categories
+
+| Category | Description | Built-in Patterns |
+|----------|-------------|-------------------|
+| `TEMPORAL` | Dates, periods, fiscal years | "As of", "For the year ended", "Q1 2025", "FY2025" |
+| `TABLE_CONTEXT` | Units, currency, scale | "(in millions)", "USD", "$", "metric tons" |
+| `ENTITY` | Company names, identifiers | (custom patterns only) |
+| `TABLE_IDENTITY` | Table titles, section names | (custom patterns only) |
+| `FOOTNOTE` | Footnotes, disclaimers | Superscripts, [1], *, † |
+
+### Search Zones
+
+| Zone | Description |
+|------|-------------|
+| `TITLE_PAGE` | First page, top 40% |
+| `PAGE_HEADER` | Top 15% of any page |
+| `PAGE_FOOTER` | Bottom 15% of any page |
+| `TABLE_CAPTION` | Text above table |
+| `COLUMN_HEADER` | Within table headers |
+| `TABLE_FOOTER` | Below table |
+| `ANYWHERE` | Full document scan |
+
+### Fallback Strategies
+
+| Strategy | Behavior |
+|----------|----------|
+| `DEFAULT` | Use `MetadataFieldDef.default` value |
+| `FLAG` | Return with `value=None`, let caller handle |
+| `PROMPT` | Signal that user input is needed |
+| `INFER` | (Future) LLM-based inference |
+
 ---
 
 ## Module Documentation
@@ -121,6 +209,7 @@ Each module has detailed documentation including all heuristics:
 | `spatial_text.py` | Monospace grid rendering | [SPATIAL_TEXT.md](SPATIAL_TEXT.md) |
 | `compress.py` | Token-efficient compression | [COMPRESS.md](COMPRESS.md) |
 | `filter.py` | Fuzzy title filtering | [FILTER.md](FILTER.md) |
+| `retrieval.py` | Fast metadata extraction | (see Search & Extract section) |
 | `interpret.py` | LLM schema mapping | [INTERPRET.md](INTERPRET.md) |
 | `serialize.py` | Export to various formats | [SERIALIZE.md](SERIALIZE.md) |
 | `heuristics.py` | Shared semantic heuristics | (see below) |
@@ -198,6 +287,18 @@ Each heuristic encodes a human inference pattern. The table shows: what humans d
 | "Too many rows for one LLM call" | Step-2 batching | Section-aware chunking |
 | "Port name is in the section header" | Context inference | Schema column without aliases |
 | "Vision made it worse, not better" | Vision cross-validation | Column count verification |
+
+### Metadata Retrieval (`retrieval.py`)
+
+> *Extracting document metadata before LLM interpretation*
+
+| Human Inference | Heuristic | Implementation |
+|---|---|---|
+| "As of December 31, 2025" | RH1: Temporal patterns | Regex for dates, periods, fiscal years |
+| "(in millions)" | RH4: Unit patterns | Regex for scale, currency, units |
+| "¹ See footnote below" | RH5: Footnote markers | Superscripts, [1], *, † detection |
+| "Date is in page header" | Zone-based search | Top 15% = PAGE_HEADER zone |
+| "Required field missing" | Validation gate | Required flag + fallback strategies |
 
 ---
 
@@ -421,6 +522,8 @@ export ANTHROPIC_API_KEY="..."  # For Claude (if configured in BAML)
 | `compress_spatial_text()` | PDF | Markdown tables + text |
 | `compress_spatial_text_structured()` | PDF | `list[StructuredTable]` |
 | `filter_pdf_by_table_titles()` | PDF + search terms | Filtered PDF bytes |
+| `search_and_extract()` | PDF + schema with metadata | `SearchExtractResult` |
+| `quick_scan()` | PDF + metadata fields | `dict[str, RetrievedMetadata]` |
 | `interpret_table()` | Compressed text + schema | `dict[int, MappedTable]` |
 | `to_csv()` / `to_parquet()` / `to_pandas()` | Result + schema | Various formats |
 
@@ -444,6 +547,9 @@ export ANTHROPIC_API_KEY="..."  # For Claude (if configured in BAML)
 | `detect_column_types()` | Get predominant type for each column |
 | `is_header_type_pattern()` | Check if row is all-strings (header-like) |
 | `estimate_header_rows()` | Estimate header count from grid structure |
+| `detect_temporal_patterns()` | RH1: Find dates, periods, fiscal years in text |
+| `detect_unit_patterns()` | RH4: Find scale, currency, units in text |
+| `detect_footnote_markers()` | RH5: Find superscripts, [1], *, † markers |
 
 ### Types
 
@@ -453,8 +559,15 @@ export ANTHROPIC_API_KEY="..."  # For Claude (if configured in BAML)
 | `GenericStructuredTable` | Cross-format StructuredTable from heuristics.py |
 | `TableMetadata` | page_number, table_index, section_label, sheet_name |
 | `CellType` | Enum: DATE, NUMBER, ENUM, STRING |
-| `CanonicalSchema` | Schema definition with columns |
+| `CanonicalSchema` | Schema definition with columns and optional metadata fields |
 | `ColumnDef` | Column name, type, description, aliases, format |
+| `MetadataFieldDef` | Metadata field: name, category, zones, patterns, fallback |
+| `MetadataCategory` | Enum: TEMPORAL, ENTITY, TABLE_IDENTITY, TABLE_CONTEXT, FOOTNOTE |
+| `SearchZone` | Enum: TITLE_PAGE, PAGE_HEADER, PAGE_FOOTER, etc. |
+| `FallbackStrategy` | Enum: INFER, DEFAULT, PROMPT, FLAG |
+| `RetrievedMetadata` | Extracted metadata value with confidence |
+| `SearchExtractResult` | Combined result: metadata + tables + validation |
+| `ValidationResult` | Validation status: passed, found, missing |
 | `FilterMatch` | Page, title, search term, score |
 
 ---
