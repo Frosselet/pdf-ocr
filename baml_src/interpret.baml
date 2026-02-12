@@ -5,7 +5,7 @@
 
 enum TableType {
   FlatHeader @description("Standard table: headers in top row(s), data in subsequent rows. Each column is independent (no spanning parent cells). Header text may wrap across multiple rows vertically but each column stands alone. 1:1 row-to-record mapping. Key sign: first column contains different values per row (IDs, names, categories).")
-  HierarchicalHeader @description("Tree-structured headers where parent cells span horizontally across multiple child columns (e.g. 'Group A' spanning 'Metric 1' and 'Metric 2'). Column names become compound paths (e.g. 'Group A / Metric 1'). Mapping may produce 1:1 records or require unpivoting depending on the canonical schema. Key sign: header row has FEWER cells than data rows because parents span multiple children. Note: stacked/multiline headers with no horizontal spanning are FlatHeader, not this.")
+  HierarchicalHeader @description("Tree-structured headers where parent cells span horizontally across multiple child columns (e.g. 'Group A' spanning 'Metric 1' and 'Metric 2'), OR where column names contain ' / ' separators indicating compound names from multi-row header stacking (e.g. 'Group A / Metric 1'). Column names become compound paths (e.g. 'Group A / Metric 1'). Mapping may produce 1:1 records or require unpivoting depending on the canonical schema. Key signs: (1) header row has FEWER cells than data rows because parents span multiple children, OR (2) column headers contain ' / ' separators from compound header construction. Note: stacked/multiline headers with no horizontal spanning AND no ' / ' separators are FlatHeader, not this.")
   PivotedTable @description("Cross-tabulation: row labels are categories, column headers are time periods or attributes, cells are values. Requires unpivoting: each source row produces multiple output records (one per value column). Key sign: column headers are dates, periods, or repeated attribute names; first column contains category labels; cells contain numeric values.")
   TransposedTable @description("Property sheet layout: field NAMES as rows (left column), field VALUES as columns. Each column (after the label column) represents a complete record. Requires transposition: each column becomes one output record, each row provides one field. Key signs: (1) first column contains field names like 'Name', 'Date', 'Status', 'Total'; (2) subsequent columns contain the corresponding values; (3) rows are heterogeneous (mix of dates, numbers, text) because each row is a different field type.")
   Unknown @description("Ambiguous structure — use best judgment based on content")
@@ -137,6 +137,7 @@ function AnalyzeAndParseTable(compressed_text: string) -> ParsedTable {
     Classify using the TableType enum definitions (provided in the output schema).
     Quick decision tree:
     - Header row has FEWER cells than data rows (horizontal spanning)? → HierarchicalHeader
+    - Column headers contain " / " separators (compound names from stacked headers)? → HierarchicalHeader
     - Column headers are repeated categories (dates, periods, attributes)? → PivotedTable
     - Field names in left column, values across columns? → TransposedTable
     - Otherwise → FlatHeader (including stacked/multiline headers with no spanning)
@@ -335,6 +336,17 @@ function MapToCanonicalSchema(parsed_table: ParsedTable, schema: CanonicalSchema
       5. EVERY row label must be checked against ALL canonical column aliases
     - Unknown: Use best judgment based on the data structure.
 
+    COMPOUND HEADER DETECTION (applies to ALL table types):
+    When column headers contain " / " separators (e.g., "Category A / Metric 1",
+    "Category A / Metric 2"), the parts form a hierarchy. Check if canonical
+    column aliases match PARTS of these compound headers:
+    - Split each compound header on " / " to get its parts
+    - If aliases match parts of compound headers, UNPIVOT: each data row produces
+      multiple records (one per value column), with matched parts as field values
+    - Apply the same aggregation/derived column filtering as HierarchicalHeader
+    This ensures compound headers from DOCX/Excel extractors trigger correct
+    unpivoting even if the table was not classified as HierarchicalHeader.
+
     General mapping rules:
     1. Match source columns to canonical columns using name, aliases, and description.
        - If aliases are provided, match against them literally.
@@ -428,6 +440,18 @@ function InterpretTable(compressed_text: string, schema: CanonicalSchema, model_
          (2) Match each row label against canonical column aliases
          (3) Example: rows "Name | Alice | Bob" and "Status | Active | Inactive" →
              TWO records: {name: "Alice", status: "Active"}, {name: "Bob", status: "Inactive"}
+
+       COMPOUND HEADER DETECTION (applies to ALL table types):
+       When column headers contain " / " separators (e.g., "Category A / Metric 1",
+       "Category A / Metric 2"), the parts form a hierarchy. Check if canonical
+       column aliases match PARTS of these compound headers:
+       - Split each compound header on " / " to get its parts
+       - If aliases match parts of compound headers, UNPIVOT: each data row produces
+         multiple records (one per value column), with matched parts as field values
+       - Apply the same aggregation/derived column filtering as HierarchicalHeader
+       This ensures compound headers from DOCX/Excel extractors trigger correct
+       unpivoting even if the table was not classified as HierarchicalHeader.
+
     2. Extract all data rows (exclude headers and aggregation rows like totals).
     3. Match source columns to canonical columns using names, aliases, and descriptions.
        When aliases are EMPTY, use the description to infer matches — e.g., a date field

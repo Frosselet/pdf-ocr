@@ -202,4 +202,45 @@ build("single_column", [{
     ],
 }])
 
+# -----------------------------------------------------------------
+# 9. propagation.docx — for similarity propagation tests
+#    Table 0: keyword-matchable (8 cols, "area harvested", "yield")
+#    Table 1: same structure but no keywords (8 cols, overlapping tokens)
+#    Table 2: different structure (3 cols, unrelated tokens)
+# -----------------------------------------------------------------
+build("propagation", [
+    # Table 0: matches "area harvested" and "yield"
+    {
+        "grid": [
+            ["Region", "Area harvested", "", "Yield", "", "Production", "", ""],
+            ["", "2024", "2025", "2024", "2025", "2024", "2025", ""],
+            ["North", "100", "110", "3.5", "3.8", "350", "418", ""],
+            ["South", "200", "210", "4.0", "4.2", "800", "882", ""],
+            ["East", "150", "160", "3.2", "3.5", "480", "560", ""],
+        ],
+        "hmerges": [(0, 1, 2), (0, 3, 4), (0, 5, 6)],
+        "vmerges": [(0, 0, 1)],
+    },
+    # Table 1: same 8-col structure, overlapping tokens, but no keywords
+    {
+        "grid": [
+            ["Region", "Sown acreage", "", "Output rate", "", "Total volume", "", ""],
+            ["", "2024", "2025", "2024", "2025", "2024", "2025", ""],
+            ["North", "100", "110", "3.5", "3.8", "350", "418", ""],
+            ["South", "200", "210", "4.0", "4.2", "800", "882", ""],
+            ["East", "150", "160", "3.2", "3.5", "480", "560", ""],
+        ],
+        "hmerges": [(0, 1, 2), (0, 3, 4), (0, 5, 6)],
+        "vmerges": [(0, 0, 1)],
+    },
+    # Table 2: different structure (3 cols, unrelated)
+    {
+        "grid": [
+            ["Date", "Price", "Volume"],
+            ["2025-01-01", "250", "1000"],
+            ["2025-01-02", "255", "1200"],
+        ],
+    },
+])
+
 print(f"Done: {len(list(OUT.glob('*.docx')))} files in {OUT}")

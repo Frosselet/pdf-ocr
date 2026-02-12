@@ -15,7 +15,13 @@
       "Bash(ls:*)",
       "Bash(grep:*)",
       "Bash(uv pip install:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd concurrent interpret_tables\\(\\) and DOCX extraction pipeline\n\nAdd interpret_tables\\(\\) sync function that wraps interpret_tables_async\\(\\)\nfor concurrent multi-table interpretation — eliminates sequential for\nloops when consolidating denormalized tables into a single normalized\nDataFrame. Uses asyncio.gather\\(\\) for parallel LLM calls \\(parse + map\\).\n\nUpdate walkthrough_docx.ipynb to use interpret_tables\\(\\) with to_pandas\\(\\)\nserialization and side-by-side FROM→TO visualization \\(raw pipe-table vs\nnormalized DataFrame\\). Add DOCX extractor with merged cell handling,\ncompound headers, user-defined classification, and test suite.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(uv sync:*)",
+      "Bash(pytest:*)",
+      "Bash(git status:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nExtract format-agnostic classify_tables\\(\\) from DOCX-specific classify_docx_tables\\(\\)\n\nClassification logic now operates on compressed pipe-table markdown tuples\n\\(the shared format from both DOCX and PDF paths\\) instead of re-parsing\nDOCX grids. This gives PDF tables classification for free via\nStructuredTable.to_compressed\\(\\).\n\nNew module: classify.py with _keyword_matches, _compute_similarity,\n_parse_pipe_header, _tokenize_header_text, and public classify_tables\\(\\).\nclassify_docx_tables\\(\\) is now a thin wrapper. 56 new adversarial tests\ncover word boundaries, multilingual text, compound headers, propagation\nedge cases, and degenerate inputs.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }
