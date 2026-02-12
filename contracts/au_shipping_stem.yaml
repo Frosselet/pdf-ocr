@@ -1,0 +1,76 @@
+# Data Contract: Australian Shipping Stems — Multi-Provider
+#
+# This contract drives a generic pipeline (prepare → fetch → transform → save).
+# 6 providers express the same semantic data with completely different layouts,
+# column names, and formats. A single canonical schema with rich aliases
+# normalizes them all into one unified DataFrame.
+
+provider: au_shipping_stem
+description: Australian shipping stem vessel loading records (multi-provider)
+
+model: openai/gpt-4o
+source_format: pdf
+
+# --- Table classification rules ---
+# Keywords are matched case-insensitively against table headers.
+categories:
+  shipping:
+    keywords:
+      - vessel
+      - ship
+      - client
+      - exporter
+      - cargo
+      - commodity
+      - eta
+      - volume
+      - tonnage
+      - port
+      - loading
+      - slot
+      - reference
+
+# --- Output table definitions ---
+outputs:
+  vessels:
+    category: shipping
+    filename: shipping_stem.parquet
+    schema:
+      description: Vessel loading records by port — unified across 6 Australian providers
+      columns:
+        - name: load_port
+          type: string
+          description: Loading port name
+          aliases: [Port, PORT, "Loading Port"]
+          format: uppercase
+        - name: vessel_name
+          type: string
+          description: Name of the vessel
+          aliases: [Ship Name, "NAME OF SHIP", "Vessel Name", Vessel]
+          format: uppercase
+        - name: ref_id
+          type: string
+          description: Reference or booking number
+          aliases: ["Ref #", "UNIQUE SLOT REFERENCE NUMBER", "VNA #", Reference]
+        - name: shipper
+          type: string
+          description: Exporting company
+          aliases: [Exporter, EXPORTER, Client, Shipper]
+          format: uppercase
+        - name: commodity
+          type: string
+          description: Type of commodity being shipped
+          aliases: [Commodity, COMMODITY, Cargo]
+        - name: tons
+          type: int
+          description: Quantity in metric tonnes
+          aliases: ["Quantity (tonnes)", "QUANTITY (TONNES)", Volume, Tonnes, MT]
+        - name: eta
+          type: string
+          description: Estimated time of arrival at port
+          aliases: [ETA, "Date ETA of Ship To", "DATE ETA OF SHIP TO"]
+          format: YYYY-MM-DD
+        - name: status
+          type: string
+          description: Current loading status
+          aliases: [Status, "Load Status", "Loading Status", "LOADING COMMENCED OR COMPLETED"]

@@ -60,9 +60,19 @@ Usage: `from baml_client import b`
 
 Test PDF files including shipping statements and edge-case documents (multi-column, overlapping text, tiny fonts).
 
-### Notebook (`walkthrough.ipynb`)
+### Notebooks
 
-Exploratory notebook demonstrating PDF parsing approaches and the spatial text renderer.
+- **`capabilities.ipynb`** — Sequential walkthrough of every transformation step (spatial text → compression → classification → schema → LLM interpretation → serialization). Format-agnostic, educational.
+- **`pipeline.ipynb`** — End-to-end contract-driven pipelines with async concurrency. Three use cases: Russian agricultural DOCX reports, Australian shipping stems (6 PDF providers), and ACEA car registrations (pivoted table normalization).
+- **`walkthrough_legacy.ipynb`** / **`walkthrough_docx_legacy.ipynb`** — Original format-specific notebooks (preserved for reference).
+
+### Data Contracts (`contracts/`)
+
+YAML files that declaratively define extraction pipelines: LLM model, table classification keywords, output schemas (columns, types, aliases, formats), and enrichment rules. The pipeline code in `pipeline.ipynb` is 100% generic — swap the contract, not the code.
+
+- **`ru_ag_ministry.yaml`** — Russian Ministry of Agriculture weekly grain reports (harvest + planting)
+- **`au_shipping_stem.yaml`** — Australian shipping stem vessel loading records (6 providers, 1 canonical schema)
+- **`acea_car_registrations.yaml`** — European new car registrations by market and power source
 
 ## Key Constraints
 
