@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from pdf_ocr.classify import _compute_similarity, _keyword_matches
 from pdf_ocr.docx_extractor import (
     _build_compound_headers,
     _build_grid_from_table,
@@ -53,9 +54,14 @@ def apr25_path() -> Path:
 
 
 @pytest.fixture(scope="module")
+def nov_path() -> Path:
+    return _resolve("Nov")
+
+
+@pytest.fixture(scope="module")
 def all_docx_paths() -> list[Path]:
     paths = sorted(DOCX_DIR.glob("*.docx"))
-    assert len(paths) == 6, f"Expected 6 DOCX files, found {len(paths)}"
+    assert len(paths) == 7, f"Expected 7 DOCX files, found {len(paths)}"
     return paths
 
 
@@ -72,6 +78,7 @@ EXPECTED_SHAPES: dict[str, tuple[int, list[tuple[int, int]]]] = {
     "June": (12, [(5, 7), (21, 16), (11, 25), (1, 29), (11, 93), (13, 88), (7, 70), (5, 14), (5, 46), (7, 56), (7, 64), (7, 66)]),
     "July": (7, [(21, 16), (11, 9), (7, 25), (8, 31), (8, 35), (8, 30), (8, 15)]),
     "September": (14, [(21, 16), (11, 7), (6, 34), (3, 25), (3, 24), (3, 74), (8, 82), (8, 82), (8, 78), (8, 49), (8, 48), (8, 9), (8, 54), (8, 20)]),
+    "Nov": (14, [(2, 1), (21, 16), (11, 44), (7, 25), (8, 88), (8, 86), (8, 84), (8, 58), (8, 35), (8, 15), (8, 71), (8, 55), (8, 59), (5, 76)]),
 }
 
 
@@ -470,12 +477,13 @@ _TEST_CATEGORIES = {
 
 # Expected classification per file
 EXPECTED_CLASSIFICATIONS: dict[str, dict[str, int]] = {
-    "Apr 21": {"other": 2, "export": 1},
-    "April 25": {"other": 4, "planting": 5},
-    "May": {"other": 3},
-    "June": {"other": 7, "planting": 5},
-    "July": {"other": 3, "harvest": 4},
-    "September": {"other": 5, "export": 1, "harvest": 8},
+    "Apr 21": {"export": 2, "other": 1},
+    "April 25": {"export": 1, "other": 3, "planting": 5},
+    "May": {"export": 1, "other": 2},
+    "June": {"export": 1, "other": 6, "planting": 5},
+    "July": {"export": 1, "harvest": 4, "other": 2},
+    "September": {"export": 2, "harvest": 8, "other": 4},
+    "Nov": {"export": 1, "harvest": 9, "other": 3, "planting": 1},
 }
 
 
@@ -840,13 +848,12 @@ class TestSyntheticClassification:
         classes = classify_docx_tables(path, {"logistics": ["cargo volume"]})
         assert classes[0]["category"] == "logistics"
 
-    def test_title_not_used_for_classification(self):
-        """FINANCIAL SUMMARY title must not influence category of other tables."""
+    def test_title_used_for_classification(self):
+        """FINANCIAL SUMMARY title contributes to classification scoring."""
         path = _synth("multi_category")
-        # Only keyword in table 2's header rows is "Revenue", "Expenses"
-        # The title "FINANCIAL SUMMARY" should not count
+        # Title "FINANCIAL SUMMARY" now contributes to scoring
         classes = classify_docx_tables(path, {"summary": ["financial summary"]})
-        assert classes[2]["category"] == "other"
+        assert classes[2]["category"] == "summary"
         assert classes[2]["title"] == "FINANCIAL SUMMARY"
 
 
@@ -926,3 +933,116 @@ class TestSyntheticEdgeCases:
             for md, meta in results:
                 assert len(md) > 0
                 assert "table_index" in meta
+
+
+# ---------------------------------------------------------------------------
+# 13. Word-boundary keyword matching
+# ---------------------------------------------------------------------------
+
+
+class TestWordBoundaryMatching:
+    """Verify _keyword_matches uses word boundaries, not substring."""
+
+    def test_rice_not_in_price(self) -> None:
+        assert _keyword_matches("rice", "Price, RUB") is False
+
+    def test_rice_in_rice_production(self) -> None:
+        assert _keyword_matches("rice", "RICE production") is True
+
+    def test_suffix_tolerance_s(self) -> None:
+        assert _keyword_matches("export", "exports data") is True
+
+    def test_suffix_tolerance_ed(self) -> None:
+        assert _keyword_matches("harvest", "harvested area") is True
+
+    def test_suffix_tolerance_ing(self) -> None:
+        assert _keyword_matches("plant", "planting season") is True
+
+    def test_multi_word_keyword(self) -> None:
+        assert _keyword_matches("area harvested", "Area harvested, TMT") is True
+
+    def test_port_not_in_transport(self) -> None:
+        assert _keyword_matches("port", "transport costs") is False
+
+    def test_exact_match(self) -> None:
+        assert _keyword_matches("yield", "yield metric centner") is True
+
+    def test_case_insensitive(self) -> None:
+        assert _keyword_matches("wheat", "WHEAT production") is True
+
+
+# ---------------------------------------------------------------------------
+# 14. min_data_rows filtering
+# ---------------------------------------------------------------------------
+
+
+def test_min_data_rows_filtering(nov_path: Path) -> None:
+    """Tables with fewer data rows than min_data_rows are forced to 'other'."""
+    # November table 0 has 0 data rows (via compress detection);
+    # extract_tables_from_docx sees 1, but classify uses merge-based detection
+    # which gives 0.  With min_data_rows=5, it and other small tables should
+    # be forced to "other".
+    classes_default = classify_docx_tables(nov_path, _TEST_CATEGORIES)
+    classes_filtered = classify_docx_tables(
+        nov_path, _TEST_CATEGORIES, min_data_rows=5,
+    )
+
+    # Table 0 is already "other" with default, so it stays "other" with filter
+    assert classes_default[0]["category"] == "other"
+    assert classes_filtered[0]["category"] == "other"
+
+    # Tables with enough rows should be unaffected
+    harvest_default = [c for c in classes_default if c["category"] == "harvest"]
+    harvest_filtered = [c for c in classes_filtered if c["category"] == "harvest"]
+    assert len(harvest_default) == len(harvest_filtered)
+
+
+# ---------------------------------------------------------------------------
+# 15. Similarity propagation
+# ---------------------------------------------------------------------------
+
+
+class TestSimilarityPropagation:
+    """Verify propagate=True propagates categories to structurally similar tables."""
+
+    def test_propagation_synthetic(self) -> None:
+        """propagation.docx: table 1 has same structure as table 0 but no keywords."""
+        path = _synth("propagation")
+        cats = {
+            "metrics": ["area harvested", "yield"],
+        }
+        # Without propagation: table 1 should be "other"
+        classes_off = classify_docx_tables(path, cats, propagate=False)
+        assert classes_off[0]["category"] == "metrics"
+        assert classes_off[1]["category"] == "other"
+        assert classes_off[2]["category"] == "other"
+
+        # With propagation: table 1 should be propagated to "metrics"
+        classes_on = classify_docx_tables(path, cats, propagate=True)
+        assert classes_on[0]["category"] == "metrics"
+        assert classes_on[1]["category"] == "metrics"  # propagated
+        assert classes_on[2]["category"] == "other"  # too different
+
+    def test_propagation_threshold(self) -> None:
+        """High threshold prevents propagation."""
+        path = _synth("propagation")
+        cats = {"metrics": ["area harvested", "yield"]}
+        classes = classify_docx_tables(
+            path, cats, propagate=True, propagate_threshold=0.99,
+        )
+        # Threshold so high that nothing propagates
+        assert classes[1]["category"] == "other"
+
+    def test_compute_similarity_identical(self) -> None:
+        """Identical profiles should have similarity 1.0."""
+        tokens = {"region", "area", "harvested", "yield"}
+        sim = _compute_similarity(8, tokens, 8.0, tokens)
+        assert sim == pytest.approx(1.0)
+
+    def test_compute_similarity_disjoint(self) -> None:
+        """Completely different profiles should have low similarity."""
+        sim = _compute_similarity(
+            3, {"date", "price"},
+            8.0, {"region", "area", "harvested", "yield"},
+        )
+        assert sim < 0.3

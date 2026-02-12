@@ -78,6 +78,11 @@ def compress_docx_tables(*args, **kwargs):
     from pdf_ocr.docx_extractor import compress_docx_tables as _compress
     return _compress(*args, **kwargs)
 
+def classify_tables(*args, **kwargs):
+    """Classify tables from compressed pipe-table markdown + metadata tuples."""
+    from pdf_ocr.classify import classify_tables as _classify
+    return _classify(*args, **kwargs)
+
 def classify_docx_tables(*args, **kwargs):
     """Classify tables in a DOCX file. Requires: pip install pdf-ocr[docx]"""
     from pdf_ocr.docx_extractor import classify_docx_tables as _classify
@@ -183,6 +188,7 @@ __all__ = [
     "estimate_header_rows",
     "is_header_type_pattern",
     # Multi-format extractors (specific formats)
+    "classify_tables",
     "classify_docx_tables",
     "compress_docx_tables",
     "extract_pivot_values",

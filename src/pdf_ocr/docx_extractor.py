@@ -15,6 +15,7 @@ and type pattern analysis.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -812,15 +813,24 @@ def compress_docx_tables(
 def classify_docx_tables(
     docx_path: str | Path,
     categories: dict[str, list[str]],
+    *,
+    min_data_rows: int = 0,
+    propagate: bool = False,
+    propagate_threshold: float = 0.3,
 ) -> list[dict]:
     """Classify each table in a DOCX by matching header text against user-defined keywords.
+
+    Thin wrapper: compresses tables via ``compress_docx_tables()`` then
+    delegates to the format-agnostic ``classify_tables()``.
 
     Args:
         docx_path: Path to the .docx file.
         categories: Mapping of category name → list of keywords.
-            A table is assigned the first category whose keywords appear
-            in the header text (case-insensitive). Tables that match no
-            category are labelled ``"other"``.
+            Each table is scored against every category by counting how many
+            keywords appear (using word-boundary matching) in the combined
+            title + header text (case-insensitive). The table is assigned to
+            the highest-scoring category. Ties are broken by dict iteration
+            order. Tables that match no category are labelled ``"other"``.
 
             Example::
 
@@ -829,9 +839,18 @@ def classify_docx_tables(
                     "export": ["export", "shipment", "fob"],
                 }
 
+        min_data_rows: Tables with fewer data rows are forced to ``"other"``
+            and excluded from similarity profile building.
+        propagate: If True, after keyword scoring, build structural profiles
+            from matched tables and propagate categories to unmatched ones
+            that exceed *propagate_threshold* similarity.
+        propagate_threshold: Minimum similarity score (0-1) for propagation.
+
     Returns:
         List of dicts with ``index``, ``category``, ``title``, ``rows``, ``cols``.
     """
+    from pdf_ocr.classify import classify_tables
+
     try:
         from docx import Document
     except ImportError as e:
@@ -844,56 +863,34 @@ def classify_docx_tables(
     if not path.exists():
         raise FileNotFoundError(f"File not found: {docx_path}")
 
-    # Lowercase all keywords once
-    lower_cats = {
-        name: [kw.lower() for kw in kws]
-        for name, kws in categories.items()
-    }
-
+    # Count total tables so we can include empty ones as "other"
     doc = Document(path)
-    results: list[dict] = []
+    total_tables = len(doc.tables)
 
-    for table_idx, table in enumerate(doc.tables):
-        grid, _styles = _build_grid_from_table(table)
-        if not grid or not grid[0]:
-            continue
+    compressed = compress_docx_tables(docx_path)
+    results = classify_tables(
+        compressed,
+        categories,
+        min_data_rows=min_data_rows,
+        propagate=propagate,
+        propagate_threshold=propagate_threshold,
+    )
 
-        header_count = _detect_header_rows_from_merges(table)
-
-        # Detect title
-        title: str | None = None
-        non_empty = [c for c in grid[0] if c.strip()]
-        if len(non_empty) == 1 and header_count > 1:
-            title = non_empty[0]
-            header_count -= 1
-            header_start = 1
-        else:
-            header_start = 0
-
-        # Collect header text (lowercased) for classification
-        header_text = " ".join(
-            cell.strip()
-            for row in grid[header_start : header_start + header_count]
-            for cell in row
-        ).lower()
-
-        # Classify: first matching category wins
-        category = "other"
-        for cat_name, keywords in lower_cats.items():
-            if any(kw in header_text for kw in keywords):
-                category = cat_name
-                break
-
-        data_rows = len(grid) - header_start - header_count
-        col_count = len(grid[0])
-
-        results.append({
-            "index": table_idx,
-            "category": category,
-            "title": title,
-            "rows": data_rows,
-            "cols": col_count,
-        })
+    # compress_docx_tables may skip tables with empty grids.
+    # Re-insert them as "other" to match the old per-table behaviour.
+    if len(results) < total_tables:
+        present = {r["index"] for r in results}
+        extras = []
+        for idx in range(total_tables):
+            if idx not in present:
+                extras.append({
+                    "index": idx,
+                    "category": "other",
+                    "title": None,
+                    "rows": 0,
+                    "cols": 0,
+                })
+        results = sorted(results + extras, key=lambda r: r["index"])
 
     return results
 
@@ -902,16 +899,15 @@ def classify_docx_tables(
 # Pivot value extraction
 # ---------------------------------------------------------------------------
 
-import re
-
-_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
+from pdf_ocr.classify import _YEAR_RE
 
 
 def extract_pivot_values(markdown: str) -> list[str]:
     """Extract pivot column values (years, periods) from compressed markdown headers.
 
-    Scans the first pipe-table header line for 4-digit years (1900-2099).
-    Returns them sorted in ascending order, deduplicated.
+    Scans all pipe-table header lines (before the ``|---|`` separator) for
+    4-digit years (1900-2099). Returns them sorted in ascending order,
+    deduplicated.
 
     Use this to dynamically build schema aliases for the ``year`` column
     instead of hardcoding years::
@@ -928,7 +924,11 @@ def extract_pivot_values(markdown: str) -> list[str]:
     Returns:
         Sorted list of unique year strings found in the header row.
     """
+    years: set[str] = set()
     for line in markdown.split("\n"):
-        if line.startswith("|") and "---" not in line:
-            return sorted(set(_YEAR_RE.findall(line)))
-    return []
+        if not line.startswith("|"):
+            continue
+        if "---" in line:
+            break  # separator = end of headers
+        years.update(_YEAR_RE.findall(line))
+    return sorted(years)

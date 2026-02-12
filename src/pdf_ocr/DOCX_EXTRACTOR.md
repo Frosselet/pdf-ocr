@@ -1,7 +1,7 @@
 # DOCX Table Extraction
 
-> **Module**: `docx_extractor.py`
-> **Public API**: `extract_tables_from_docx()`, `extract_tables_from_word()`, `compress_docx_tables()`, `classify_docx_tables()`, `docx_to_markdown()`
+> **Modules**: `docx_extractor.py`, `classify.py`
+> **Public API**: `extract_tables_from_docx()`, `extract_tables_from_word()`, `compress_docx_tables()`, `classify_tables()`, `classify_docx_tables()`, `docx_to_markdown()`
 
 Extracts structured tables from Word documents (.docx, .doc), handles hierarchical merged-cell headers, and produces compressed pipe-table markdown ready for `interpret_table()`.
 
@@ -142,18 +142,49 @@ Result:        ["Region", "Area", "Area harvested / 2025", "Area harvested / 202
 
 ---
 
-### DH5: Table Classification (`classify_docx_tables`)
+### DH5: Table Classification (`classify_docx_tables` → `classify_tables`)
 
-**Problem**: A single DOCX may contain many tables of different types. Processing requires knowing which tables to target.
+**Problem**: A single DOCX may contain many tables of different types. Processing requires knowing which tables to target. Plain substring matching (`kw in header_text`) causes false positives (e.g., keyword `"rice"` matches `"Price, RUB"`), and tables with identical structure but missing keywords fall through to `"other"`.
 
-**Solution**: The caller provides a `categories` dict mapping category names to keyword lists. Header text is collected from all header rows (after title extraction), lowercased, and scanned for keyword presence. The first matching category wins; unmatched tables get `"other"`.
+**Architecture**: Classification is **format-agnostic**. The core logic lives in `classify.py` and operates on compressed `list[tuple[str, dict]]` tuples — the same format produced by both `compress_docx_tables()` (DOCX) and `StructuredTable.to_compressed()` (PDF). The DOCX-specific `classify_docx_tables()` is a thin wrapper that compresses then delegates to `classify_tables()`.
+
+**Solution — Three layers**:
+
+1. **Word-boundary keyword matching** (`_keyword_matches` in `classify.py`): Replaces `kw in text` with a regex that respects word boundaries and tolerates English morphological suffixes (`s`, `es`, `ed`, `ing`). This prevents `"rice"` from matching `"Price"` and `"port"` from matching `"transport"`, while still allowing `"export"` to match `"exports"`. Uses ASCII-only word boundaries (`(?<![a-zA-Z])` / `(?![a-zA-Z])`) which correctly handles multilingual text — accented characters like `é` in "exporté" don't block the "export" boundary.
+
+2. **`min_data_rows` filtering**: Tables with fewer data rows than the threshold are forced to `"other"` immediately and excluded from similarity profile building. This prevents noise tables (e.g., empty or tiny tables) from distorting classification.
+
+3. **Similarity propagation** (`propagate=True`): After keyword scoring, structural profiles are built from keyword-matched tables (column count + header token vocabulary). Unmatched `"other"` tables are then compared against these profiles using a weighted similarity metric (50% column-count ratio + 50% header-token Jaccard). Tables exceeding `propagate_threshold` are re-classified to the best-matching category. Profiles are built only from keyword-matched tables (not from propagated ones) to prevent cascading.
+
+**Compound header handling**: Column names from compressed pipe-table markdown use ` / ` to separate stacked header levels (e.g., `"Area / harvested / 2025"`). Before keyword matching, the header text replaces ` / ` with ` ` so multi-word keywords like `"area harvested"` still match across compound header boundaries.
 
 ```python
+# DOCX-specific (thin wrapper)
+from pdf_ocr import classify_docx_tables
 categories = {
     "harvest": ["area harvested", "yield", "collected"],
     "export": ["export", "shipment", "fob"],
 }
 classes = classify_docx_tables("report.docx", categories)
+
+# Format-agnostic (works with any compressed tables)
+from pdf_ocr import classify_tables, compress_docx_tables
+compressed = compress_docx_tables("report.docx")
+classes = classify_tables(compressed, categories)
+
+# PDF tables (via StructuredTable.to_compressed)
+from pdf_ocr import compress_spatial_text_structured, classify_tables
+tables = compress_spatial_text_structured("report.pdf")
+compressed = [t.to_compressed() for t in tables]
+classes = classify_tables(compressed, categories)
+
+# With min_data_rows filtering and similarity propagation
+classes = classify_tables(
+    compressed, categories,
+    min_data_rows=5,
+    propagate=True,
+    propagate_threshold=0.3,
+)
 ```
 
 ---
@@ -290,22 +321,47 @@ Metadata fields:
 
 Returns `list[str]` — sorted unique years found in the header row (e.g., `["2024", "2025"]`).
 
-### `classify_docx_tables()`
+### `classify_tables()` (format-agnostic, from `classify.py`)
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `docx_path` | `str \| Path` | required | Path to .docx file |
-| `categories` | `dict[str, list[str]]` | required | Category name → keyword list. First match wins; unmatched tables get `"other"` |
+| `tables` | `list[tuple[str, dict]]` | required | `(markdown, meta)` tuples from `compress_docx_tables()` or `StructuredTable.to_compressed()`. Each meta must have `table_index`, `title`, `row_count`, `col_count` |
+| `categories` | `dict[str, list[str]]` | required | Category name → keyword list (word-boundary matched). Highest-scoring category wins; unmatched tables get `"other"` |
+| `min_data_rows` | `int` | `0` | Tables with fewer data rows are forced to `"other"` |
+| `propagate` | `bool` | `False` | Propagate categories to structurally similar unmatched tables |
+| `propagate_threshold` | `float` | `0.3` | Minimum similarity (0-1) for propagation |
 
 Returns `list[dict]` with fields:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `index` | `int` | Table position in document |
+| `index` | `int` | Table position in document (from `meta["table_index"]`) |
 | `category` | `str` | One of the caller's category names, or `"other"` |
 | `title` | `str \| None` | Extracted title |
 | `rows` | `int` | Data row count |
 | `cols` | `int` | Column count |
+
+### `classify_docx_tables()` (DOCX wrapper)
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `docx_path` | `str \| Path` | required | Path to .docx file |
+| `categories` | `dict[str, list[str]]` | required | Category name → keyword list |
+| `min_data_rows` | `int` | `0` | Tables with fewer data rows are forced to `"other"` |
+| `propagate` | `bool` | `False` | Propagate categories to structurally similar unmatched tables |
+| `propagate_threshold` | `float` | `0.3` | Minimum similarity (0-1) for propagation |
+
+Thin wrapper: calls `compress_docx_tables(docx_path)` then `classify_tables()`. Returns same `list[dict]` format as `classify_tables()`.
+
+### `StructuredTable.to_compressed()` (on `compress.py` StructuredTable)
+
+Returns `tuple[str, dict]` — pipe-table markdown + metadata dict compatible with `classify_tables()`. Enables the PDF classification path:
+
+```python
+tables = compress_spatial_text_structured("report.pdf")
+compressed = [t.to_compressed() for t in tables]
+classes = classify_tables(compressed, categories)
+```
 
 ---
 
@@ -357,11 +413,13 @@ Visual info feeds into `_analyze_visual_structure()` to identify header rows by 
 
 ## Testing
 
-82 regression tests in `tests/test_docx_extractor.py` cover:
+### DOCX-level tests (`tests/test_docx_extractor.py`)
+
+98 regression tests covering the DOCX extraction and classification wrapper:
 
 | Test Group | Count | Verifies |
 | --- | --- | --- |
-| Shape regression | 6 | Table count, column count, row count per file |
+| Shape regression | 7 | Table count, column count, row count per file |
 | Content regression | 7 | Specific column names and cell values |
 | Grid dimensions | 2 | Raw grid rows x cols after _tc dedup |
 | _tc dedup correctness | 4 | Merged cells produce correct positions |
@@ -369,7 +427,7 @@ Visual info feeds into `_analyze_visual_structure()` to identify header rows by 
 | Compound headers | 6 | Forward-fill, stacking, deduplication |
 | Compress rendering | 4 | Pipe-table output format |
 | Compress integration | 5 | End-to-end DOCX to markdown |
-| Classification | 11 | Category counts and titles per file |
+| Classification | 13 | Category counts and titles per file (incl. Nov) |
 | Pivot values | 6 | Year extraction from headers |
 | Smoke tests | 3 | All files extract/classify/compress without error |
 | Synthetic: flat/single | 3 | Flat tables, single-column edge case |
@@ -380,7 +438,29 @@ Visual info feeds into `_analyze_visual_structure()` to identify header rows by 
 | Synthetic: classification | 4 | Multi-table routing, case-insensitive matching |
 | Synthetic: multi-table | 2 | Table index filtering, mixed flat/merged |
 | Synthetic: edge cases | 5 | Wide tables, unicode, single column, smoke test |
+| Word-boundary matching | 9 | Substring rejection, suffix tolerance, multi-word |
+| min_data_rows filtering | 1 | Small tables forced to "other" |
+| Similarity propagation | 4 | Category propagation, threshold, similarity math |
+
+### Format-agnostic classification tests (`tests/test_classify.py`)
+
+56 tests covering the `classify.py` module directly:
+
+| Test Group | Count | Verifies |
+| --- | --- | --- |
+| `_parse_pipe_header` unit | 7 | Normal table, title lines, empty input, separator-only, whitespace |
+| `_tokenize_header_text` unit | 8 | Year/number filtering, broad punctuation stripping (dashes, brackets, currency, asterisks) |
+| Integration (hand-crafted) | 7 | Single/multi-category match, min_data_rows, no-match, empty categories, title-only, propagation |
+| Adversarial: word boundary | 5 | Superstring rejection, prefix/suffix rejection, suffix outside tolerance, double suffix |
+| Adversarial: compound header | 2 | ` / ` collapse for multi-word keywords, 3-level compound headers |
+| Adversarial: cross-category | 2 | Tie-breaking by dict order, highest raw count wins |
+| Adversarial: scoring | 2 | Repeated column names count once, raw count beats ratio |
+| Adversarial: degenerate input | 7 | Empty markdown, no pipe rows, all-numeric headers, single column, zero/exact/below min_data_rows |
+| Adversarial: propagation | 4 | Threshold 0/1, wrong structure, no donors |
+| Adversarial: multilingual | 4 | Accented suffix boundary, Cyrillic lookalike, CJK mixed script, German umlaut |
+| Adversarial: punctuation | 4 | En-dash, brackets, currency, asterisk stripping |
+| PDF classification | 4 | CBH Shipping Stem via to_compressed(), round-trip, no section label, short row padding |
 
 ```bash
-uv run pytest tests/test_docx_extractor.py -v
+uv run pytest tests/test_docx_extractor.py tests/test_classify.py -v
 ```

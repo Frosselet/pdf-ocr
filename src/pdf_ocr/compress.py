@@ -891,6 +891,25 @@ class StructuredTable:
     column_names: list[str]  # Final flattened names from _build_stacked_headers()
     data: list[list[str]]  # Data rows (each row has len == len(column_names))
 
+    def to_compressed(self) -> tuple[str, dict]:
+        """Render as ``(markdown, meta)`` tuple for ``classify_tables()``."""
+        lines: list[str] = []
+        if self.metadata.section_label:
+            lines.append(f"## {self.metadata.section_label}")
+            lines.append("")
+        lines.append("| " + " | ".join(self.column_names) + " |")
+        lines.append("| " + " | ".join("---" for _ in self.column_names) + " |")
+        for row in self.data:
+            padded = row + [""] * (len(self.column_names) - len(row))
+            lines.append("| " + " | ".join(padded[: len(self.column_names)]) + " |")
+        meta = {
+            "table_index": self.metadata.table_index,
+            "title": self.metadata.section_label,
+            "row_count": len(self.data),
+            "col_count": len(self.column_names),
+        }
+        return "\n".join(lines), meta
+
 
 # ---------------------------------------------------------------------------
 # Relative metrics — avoid brittle absolute thresholds

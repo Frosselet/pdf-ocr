@@ -112,6 +112,35 @@ for table in tables:
         print(row)
 ```
 
+### Classification (Format-Agnostic)
+
+Classify tables by matching headers against user-defined keyword categories. Works with both PDF and DOCX tables:
+
+```python
+from pdf_ocr import compress_spatial_text_structured, classify_tables
+
+# PDF path
+tables = compress_spatial_text_structured("document.pdf")
+compressed = [t.to_compressed() for t in tables]
+
+categories = {
+    "shipping": ["vessel", "port", "cargo"],
+    "harvest": ["area harvested", "yield", "collected"],
+}
+classes = classify_tables(compressed, categories)
+
+for c in classes:
+    print(f"Table {c['index']}: {c['category']} ({c['title']})")
+```
+
+```python
+# DOCX shortcut
+from pdf_ocr import classify_docx_tables
+
+classes = classify_docx_tables("report.docx", categories,
+    propagate=True, propagate_threshold=0.3)
+```
+
 ## Search & Extract (Metadata + Tables)
 
 Extract document metadata (dates, currency, units) before LLM interpretation:
@@ -212,6 +241,7 @@ Each module has detailed documentation including all heuristics:
 | `retrieval.py` | Fast metadata extraction | (see Search & Extract section) |
 | `interpret.py` | LLM schema mapping | [INTERPRET.md](INTERPRET.md) |
 | `serialize.py` | Export to various formats | [SERIALIZE.md](SERIALIZE.md) |
+| `classify.py` | Format-agnostic table classification | [DOCX_EXTRACTOR.md](DOCX_EXTRACTOR.md#dh5-table-classification) |
 | `heuristics.py` | Shared semantic heuristics | (see below) |
 | `xlsx_extractor.py` | Excel extraction | (see Multi-Format section) |
 | `docx_extractor.py` | Word extraction | [DOCX_EXTRACTOR.md](DOCX_EXTRACTOR.md) |
@@ -538,7 +568,8 @@ export ANTHROPIC_API_KEY="..."  # For Claude (if configured in BAML)
 | `extract_tables_from_xlsx()` | .xlsx path only | `list[StructuredTable]` |
 | `extract_tables_from_docx()` | .docx path only | `list[StructuredTable]` |
 | `compress_docx_tables()` | .docx path | `list[tuple[str, dict]]` |
-| `classify_docx_tables()` | .docx path | `list[dict]` |
+| `classify_tables()` | `list[tuple[str, dict]]` | `list[dict]` — format-agnostic classification |
+| `classify_docx_tables()` | .docx path | `list[dict]` — DOCX wrapper for `classify_tables()` |
 | `extract_tables_from_pptx()` | .pptx path only | `list[StructuredTable]` |
 
 ### Shared Heuristic Functions
