@@ -214,7 +214,7 @@ Each module has detailed documentation including all heuristics:
 | `serialize.py` | Export to various formats | [SERIALIZE.md](SERIALIZE.md) |
 | `heuristics.py` | Shared semantic heuristics | (see below) |
 | `xlsx_extractor.py` | Excel extraction | (see Multi-Format section) |
-| `docx_extractor.py` | Word extraction | (see Multi-Format section) |
+| `docx_extractor.py` | Word extraction | [DOCX_EXTRACTOR.md](DOCX_EXTRACTOR.md) |
 | `pptx_extractor.py` | PowerPoint extraction | (see Multi-Format section) |
 | `html_extractor.py` | HTML extraction | (see Multi-Format section) |
 
@@ -537,6 +537,8 @@ export ANTHROPIC_API_KEY="..."  # For Claude (if configured in BAML)
 | `extract_tables_from_html()` | .html path or string | `list[StructuredTable]` |
 | `extract_tables_from_xlsx()` | .xlsx path only | `list[StructuredTable]` |
 | `extract_tables_from_docx()` | .docx path only | `list[StructuredTable]` |
+| `compress_docx_tables()` | .docx path | `list[tuple[str, dict]]` |
+| `classify_docx_tables()` | .docx path | `list[dict]` |
 | `extract_tables_from_pptx()` | .pptx path only | `list[StructuredTable]` |
 
 ### Shared Heuristic Functions

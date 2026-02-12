@@ -4,7 +4,18 @@
       "Bash(uv run python:*)",
       "Bash(python3:*)",
       "Bash(wc:*)",
-      "Bash(.venv/bin/python:*)"
+      "Bash(.venv/bin/python:*)",
+      "Bash(unzip:*)",
+      "Bash(cd:*)",
+      "Bash(uv run pip list)",
+      "Bash(uv run:*)",
+      "Bash(python:*)",
+      "WebSearch",
+      "mcp__ide__getDiagnostics",
+      "Bash(ls:*)",
+      "Bash(grep:*)",
+      "Bash(uv pip install:*)",
+      "Bash(git add:*)"
     ]
   }
 }

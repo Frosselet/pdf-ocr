@@ -1090,6 +1090,40 @@ def interpret_table(
     )
 
 
+def interpret_tables(
+    compressed_texts: list[str],
+    schema: CanonicalSchema,
+    *,
+    model: str = DEFAULT_MODEL,
+    fallback_model: str | None = None,
+) -> list[baml_types.MappedTable]:
+    """Interpret multiple independent tables concurrently.
+
+    Sync wrapper around :func:`interpret_tables_async`.  Each table goes
+    through the full 2-step pipeline (parse then map) with all tables
+    processed in parallel via ``asyncio.gather()``.
+
+    Use this when you have several pre-split tables (e.g. from
+    ``compress_docx_tables()``) that share a schema and should be
+    interpreted as fast as possible.
+
+    Args:
+        compressed_texts: List of compressed text strings, one per table.
+        schema: Canonical schema to map all tables to.
+        model: LLM to use for all calls.
+        fallback_model: If set, retry each step with this model on failure.
+
+    Returns:
+        List of ``MappedTable`` results, one per input text, in the same
+        order as *compressed_texts*.
+    """
+    return _run_async(
+        interpret_tables_async(
+            compressed_texts, schema, model=model, fallback_model=fallback_model,
+        )
+    )
+
+
 def interpret_table_single_shot(
     compressed_text: str,
     schema: CanonicalSchema,

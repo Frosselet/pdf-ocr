@@ -53,5 +53,8 @@ all = [
     "selectolax>=0.3",
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/pdf_ocr"]

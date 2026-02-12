@@ -39,6 +39,7 @@ from pdf_ocr.interpret import (
     infer_table_schema_from_image,
     interpret_table,
     interpret_table_single_shot,
+    interpret_tables,
     interpret_tables_async,
     to_records,
     to_records_by_page,
@@ -70,6 +71,21 @@ def extract_tables_from_xlsx(*args, **kwargs):
 def extract_tables_from_docx(*args, **kwargs):
     """Extract tables from DOCX files. Requires: pip install pdf-ocr[docx]"""
     from pdf_ocr.docx_extractor import extract_tables_from_docx as _extract
+    return _extract(*args, **kwargs)
+
+def compress_docx_tables(*args, **kwargs):
+    """Compress DOCX tables to pipe-table markdown. Requires: pip install pdf-ocr[docx]"""
+    from pdf_ocr.docx_extractor import compress_docx_tables as _compress
+    return _compress(*args, **kwargs)
+
+def classify_docx_tables(*args, **kwargs):
+    """Classify tables in a DOCX file. Requires: pip install pdf-ocr[docx]"""
+    from pdf_ocr.docx_extractor import classify_docx_tables as _classify
+    return _classify(*args, **kwargs)
+
+def extract_pivot_values(*args, **kwargs):
+    """Extract pivot values (years) from compressed DOCX markdown headers."""
+    from pdf_ocr.docx_extractor import extract_pivot_values as _extract
     return _extract(*args, **kwargs)
 
 def extract_tables_from_pptx(*args, **kwargs):
@@ -144,6 +160,7 @@ __all__ = [
     "infer_table_schema_from_image",
     "interpret_table",
     "interpret_table_single_shot",
+    "interpret_tables",
     "interpret_tables_async",
     "pdf_to_spatial_text",
     "quick_scan",
@@ -166,6 +183,9 @@ __all__ = [
     "estimate_header_rows",
     "is_header_type_pattern",
     # Multi-format extractors (specific formats)
+    "classify_docx_tables",
+    "compress_docx_tables",
+    "extract_pivot_values",
     "extract_tables_from_docx",
     "extract_tables_from_html",
     "extract_tables_from_pptx",

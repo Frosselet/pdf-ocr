@@ -170,11 +170,20 @@ def _build_grid_from_table(table: "Table") -> tuple[list[list[str]], list[list[D
         return [], []
 
     # Count columns from first row (gridSpan-aware)
+    # python-docx returns duplicate _tc references for horizontally merged cells
+    # (a cell with gridSpan=2 appears twice in row.cells, both pointing to the
+    # same XML element). We must deduplicate by tracking seen _tc ids.
     num_cols = 0
+    seen_tcs: set[int] = set()
     for cell in table.rows[0].cells:
+        tc_id = id(cell._tc)
+        if tc_id in seen_tcs:
+            continue
+        seen_tcs.add(tc_id)
         try:
             tc = cell._tc
-            grid_span = tc.tcPr.gridSpan if tc.tcPr else None
+            tc_pr = tc.tcPr
+            grid_span = tc_pr.gridSpan if tc_pr is not None else None
             span = int(grid_span.val) if grid_span is not None else 1
             num_cols += span
         except Exception:
@@ -193,8 +202,15 @@ def _build_grid_from_table(table: "Table") -> tuple[list[list[str]], list[list[D
 
     for row_idx, row in enumerate(table.rows):
         col_idx = 0
+        seen_tcs_row: set[int] = set()
 
         for cell in row.cells:
+            # Deduplicate: python-docx returns the same _tc for merged cells
+            tc_id = id(cell._tc)
+            if tc_id in seen_tcs_row:
+                continue
+            seen_tcs_row.add(tc_id)
+
             # Skip if we've already filled this position due to previous cell's span
             while col_idx < num_cols and grid[row_idx][col_idx]:
                 col_idx += 1
@@ -208,11 +224,11 @@ def _build_grid_from_table(table: "Table") -> tuple[list[list[str]], list[list[D
                 tc_pr = tc.tcPr
 
                 # Grid span (horizontal merge)
-                grid_span = tc_pr.gridSpan if tc_pr else None
+                grid_span = tc_pr.gridSpan if tc_pr is not None else None
                 h_span = int(grid_span.val) if grid_span is not None else 1
 
                 # Vertical merge
-                v_merge = tc_pr.vMerge if tc_pr else None
+                v_merge = tc_pr.vMerge if tc_pr is not None else None
 
             except Exception:
                 h_span = 1
@@ -253,6 +269,106 @@ def _build_grid_from_table(table: "Table") -> tuple[list[list[str]], list[list[D
             col_idx += h_span
 
     return grid, styles
+
+
+def _detect_header_rows_from_merges(table: "Table", *, max_scan: int = 10) -> int:
+    """Detect how many leading rows are headers using merge information.
+
+    A row is considered a header row if it contains cells with gridSpan > 1
+    (horizontal spanning) or vMerge (vertical merge). These indicate
+    structural headers with hierarchical labels.
+
+    Scans the first *max_scan* rows and finds the last row with merge
+    indicators. All rows from 0 up to (and including) that row are treated
+    as header rows. This handles cases where a title row (no merges) precedes
+    metric/year rows that do have merges.
+
+    Returns at least 1 if the table has rows.
+    """
+    num_rows = len(table.rows)
+    if num_rows == 0:
+        return 0
+
+    last_merge_row = -1
+    for row_idx, row in enumerate(table.rows[: max_scan]):
+        seen: set[int] = set()
+        for cell in row.cells:
+            tc_id = id(cell._tc)
+            if tc_id in seen:
+                continue
+            seen.add(tc_id)
+            try:
+                tc = cell._tc
+                tc_pr = tc.tcPr
+                if tc_pr is not None:
+                    gs = tc_pr.gridSpan
+                    if gs is not None and int(gs.val) > 1:
+                        last_merge_row = row_idx
+                        break
+                    vm = tc_pr.vMerge
+                    if vm is not None:
+                        last_merge_row = row_idx
+                        break
+            except Exception:
+                continue
+
+    # All rows up to and including the last merge row are headers
+    header_count = last_merge_row + 1 if last_merge_row >= 0 else 0
+    return max(header_count, 1) if num_rows > 0 else 0
+
+
+def _build_compound_headers(
+    header_rows: list[list[str]],
+    *,
+    title_row: str | None = None,
+) -> list[str]:
+    """Stack header rows into compound column names joined by " / ".
+
+    For each column position, join non-empty values from each header row.
+    Empty cells in a row that are part of a horizontal span inherit the
+    preceding non-empty cell's text (forward-fill within each row).
+
+    Args:
+        header_rows: List of rows (each a list of cell strings).
+        title_row: Optional title text prepended to all headers.
+
+    Returns:
+        List of compound header strings, one per column.
+    """
+    if not header_rows:
+        return []
+
+    num_cols = max(len(r) for r in header_rows) if header_rows else 0
+    if num_cols == 0:
+        return []
+
+    # Forward-fill each header row: empty cells inherit preceding non-empty
+    filled_rows: list[list[str]] = []
+    for row in header_rows:
+        filled: list[str] = []
+        last_nonempty = ""
+        for i in range(num_cols):
+            val = row[i].strip() if i < len(row) else ""
+            if val:
+                last_nonempty = val
+                filled.append(val)
+            else:
+                filled.append(last_nonempty)
+        filled_rows.append(filled)
+
+    # Stack columns vertically
+    result: list[str] = []
+    for col in range(num_cols):
+        parts: list[str] = []
+        if title_row:
+            parts.append(title_row.strip())
+        for row in filled_rows:
+            val = row[col] if col < len(row) else ""
+            if val and val not in parts:
+                parts.append(val)
+        result.append(" / ".join(parts) if parts else "")
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -540,3 +656,279 @@ def docx_to_markdown(docx_path: str | Path) -> str:
         parts.append("")  # Blank line between tables
 
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# DOCX → Compressed markdown pipeline
+# ---------------------------------------------------------------------------
+
+
+def compress_docx_table(
+    raw_grid: list[list[str]],
+    header_row_count: int,
+    *,
+    title: str | None = None,
+) -> str:
+    """Render a DOCX table as pipe-table markdown with compound headers.
+
+    Splits raw_grid into header rows (0..header_row_count-1) and data rows,
+    builds compound "/" headers with forward-fill for spans, strips trailing
+    empty columns, and renders as markdown pipe-table.
+
+    Args:
+        raw_grid: The full grid including header and data rows.
+        header_row_count: Number of leading rows to treat as headers.
+        title: Optional section title prepended as ``## title``.
+
+    Returns:
+        Markdown string with optional title and pipe-table.
+    """
+    if not raw_grid:
+        return ""
+
+    header_rows = raw_grid[:header_row_count]
+    data_rows = raw_grid[header_row_count:]
+
+    # Build compound headers
+    headers = _build_compound_headers(header_rows)
+    if not headers:
+        return ""
+
+    num_cols = len(headers)
+
+    # Strip trailing empty columns
+    while num_cols > 0:
+        col = num_cols - 1
+        header_empty = not headers[col]
+        data_empty = all(
+            not (row[col] if col < len(row) else "")
+            for row in data_rows
+        )
+        if header_empty and data_empty:
+            num_cols -= 1
+        else:
+            break
+    if num_cols == 0:
+        return ""
+
+    headers = headers[:num_cols]
+
+    parts: list[str] = []
+
+    if title:
+        parts.append(f"## {title.strip()}")
+        parts.append("")
+
+    # Header row
+    parts.append("| " + " | ".join(headers) + " |")
+    # Separator row
+    parts.append("| " + " | ".join(["---"] * num_cols) + " |")
+    # Data rows
+    for row in data_rows:
+        cells = [(row[i] if i < len(row) else "") for i in range(num_cols)]
+        parts.append("| " + " | ".join(cells) + " |")
+
+    return "\n".join(parts)
+
+
+def compress_docx_tables(
+    docx_path: str | Path,
+    *,
+    table_indices: list[int] | None = None,
+) -> list[tuple[str, dict]]:
+    """Extract tables from a DOCX and render each as compressed pipe-table markdown.
+
+    End-to-end pipeline: extract DOCX → build raw grid (with _tc dedup) →
+    detect header rows via merge info → build compound headers → render
+    pipe-table markdown.
+
+    Args:
+        docx_path: Path to the .docx file.
+        table_indices: If provided, only process tables at these indices.
+
+    Returns:
+        List of ``(markdown_text, metadata)`` tuples. Metadata includes
+        ``table_index``, ``title``, ``row_count``, ``col_count``.
+    """
+    try:
+        from docx import Document
+    except ImportError as e:
+        raise ImportError(
+            "python-docx is required for DOCX extraction. "
+            "Install with: pip install pdf-ocr[docx]"
+        ) from e
+
+    path = Path(docx_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {docx_path}")
+
+    doc = Document(path)
+    results: list[tuple[str, dict]] = []
+
+    for table_idx, table in enumerate(doc.tables):
+        if table_indices is not None and table_idx not in table_indices:
+            continue
+
+        grid, _styles = _build_grid_from_table(table)
+        if not grid or not grid[0]:
+            continue
+
+        # Detect header rows from merge information
+        header_count = _detect_header_rows_from_merges(table)
+
+        # Detect title: if row 0 has only one non-empty cell, treat as title
+        title: str | None = None
+        non_empty = [c for c in grid[0] if c.strip()]
+        if len(non_empty) == 1 and header_count > 1:
+            title = non_empty[0]
+            grid = grid[1:]  # remove title row from grid
+            header_count -= 1
+
+        data_row_count = len(grid) - header_count
+
+        md = compress_docx_table(grid, header_count, title=title)
+        if not md:
+            continue
+
+        # Determine column count from first data row (or headers)
+        col_count = len(grid[0]) if grid else 0
+
+        meta = {
+            "table_index": table_idx,
+            "title": title,
+            "row_count": data_row_count,
+            "col_count": col_count,
+        }
+        results.append((md, meta))
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Table classification
+# ---------------------------------------------------------------------------
+
+
+def classify_docx_tables(
+    docx_path: str | Path,
+    categories: dict[str, list[str]],
+) -> list[dict]:
+    """Classify each table in a DOCX by matching header text against user-defined keywords.
+
+    Args:
+        docx_path: Path to the .docx file.
+        categories: Mapping of category name → list of keywords.
+            A table is assigned the first category whose keywords appear
+            in the header text (case-insensitive). Tables that match no
+            category are labelled ``"other"``.
+
+            Example::
+
+                categories = {
+                    "harvest": ["area harvested", "yield", "collected"],
+                    "export": ["export", "shipment", "fob"],
+                }
+
+    Returns:
+        List of dicts with ``index``, ``category``, ``title``, ``rows``, ``cols``.
+    """
+    try:
+        from docx import Document
+    except ImportError as e:
+        raise ImportError(
+            "python-docx is required for DOCX extraction. "
+            "Install with: pip install pdf-ocr[docx]"
+        ) from e
+
+    path = Path(docx_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {docx_path}")
+
+    # Lowercase all keywords once
+    lower_cats = {
+        name: [kw.lower() for kw in kws]
+        for name, kws in categories.items()
+    }
+
+    doc = Document(path)
+    results: list[dict] = []
+
+    for table_idx, table in enumerate(doc.tables):
+        grid, _styles = _build_grid_from_table(table)
+        if not grid or not grid[0]:
+            continue
+
+        header_count = _detect_header_rows_from_merges(table)
+
+        # Detect title
+        title: str | None = None
+        non_empty = [c for c in grid[0] if c.strip()]
+        if len(non_empty) == 1 and header_count > 1:
+            title = non_empty[0]
+            header_count -= 1
+            header_start = 1
+        else:
+            header_start = 0
+
+        # Collect header text (lowercased) for classification
+        header_text = " ".join(
+            cell.strip()
+            for row in grid[header_start : header_start + header_count]
+            for cell in row
+        ).lower()
+
+        # Classify: first matching category wins
+        category = "other"
+        for cat_name, keywords in lower_cats.items():
+            if any(kw in header_text for kw in keywords):
+                category = cat_name
+                break
+
+        data_rows = len(grid) - header_start - header_count
+        col_count = len(grid[0])
+
+        results.append({
+            "index": table_idx,
+            "category": category,
+            "title": title,
+            "rows": data_rows,
+            "cols": col_count,
+        })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Pivot value extraction
+# ---------------------------------------------------------------------------
+
+import re
+
+_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
+
+
+def extract_pivot_values(markdown: str) -> list[str]:
+    """Extract pivot column values (years, periods) from compressed markdown headers.
+
+    Scans the first pipe-table header line for 4-digit years (1900-2099).
+    Returns them sorted in ascending order, deduplicated.
+
+    Use this to dynamically build schema aliases for the ``year`` column
+    instead of hardcoding years::
+
+        results = compress_docx_tables("report.docx", table_indices=[4])
+        md, meta = results[0]
+        years = extract_pivot_values(md)          # e.g. ["2024", "2025"]
+        recent = years[-2:]                       # last 2 years
+        schema_dict["columns"][2]["aliases"] = recent
+
+    Args:
+        markdown: Compressed pipe-table markdown from ``compress_docx_table()``.
+
+    Returns:
+        Sorted list of unique year strings found in the header row.
+    """
+    for line in markdown.split("\n"):
+        if line.startswith("|") and "---" not in line:
+            return sorted(set(_YEAR_RE.findall(line)))
+    return []
