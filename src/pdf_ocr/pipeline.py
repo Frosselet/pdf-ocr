@@ -180,6 +180,15 @@ async def interpret_output_async(
             for col in schema.columns:
                 col.aliases = resolve_year_templates(col.aliases, pivot_years)
 
+    # Also resolve {YYYY} templates in enrichment constant values
+    enrichment = copy.deepcopy(output_spec.enrichment)
+    if pivot_years:
+        for col_name, spec in enrichment.items():
+            if spec.get("source") == "constant" and isinstance(spec.get("value"), str):
+                resolved = resolve_year_templates([spec["value"]], pivot_years)
+                if resolved:
+                    spec["value"] = resolved[0]
+
     is_docx = isinstance(data, list)
 
     if is_docx:
@@ -194,7 +203,7 @@ async def interpret_output_async(
                 continue
             df = to_pandas(mapped, schema)
             df = enrich_dataframe(
-                df, output_spec.enrichment,
+                df, enrichment,
                 title=meta.get("title"), report_date=report_date,
             )
             frames.append(df)
@@ -206,7 +215,7 @@ async def interpret_output_async(
         )
         df_out = to_pandas(result, schema)
         df_out = enrich_dataframe(
-            df_out, output_spec.enrichment, report_date=report_date,
+            df_out, enrichment, report_date=report_date,
         )
 
     df_out = format_dataframe(df_out, output_spec.col_specs)

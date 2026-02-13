@@ -68,13 +68,15 @@
             "name": "Value",
             "type": "float",
             "description": "Numeric value for the metric",
-            "aliases": ["{YYYY}", "{YYYY-1}"]
+            "aliases": ["{YYYY}"],
+            "format": "#,##"
           },
           {
             "name": "Year",
             "type": "int",
             "description": "Reporting year",
-            "aliases": ["{YYYY}", "{YYYY-1}"]
+            "source": "constant",
+            "value": "{YYYY}"
           }
         ]
       }
@@ -95,13 +97,15 @@
             "name": "Area",
             "type": "float",
             "description": "MoA target area — the 'MOA Target YYYY' column in the source table",
-            "aliases": ["MOA Target {YYYY}"]
+            "aliases": ["MOA Target {YYYY}"],
+            "format": "#,##"
           },
           {
             "name": "Value",
             "type": "float",
             "description": "Actual sown area — the plain year column (e.g. '2025') that has ONLY a 4-digit year, no prefix like 'MOA Target' or 'Final' or 'MOA'",
-            "aliases": ["{YYYY}", "{YYYY-1}"]
+            "aliases": ["{YYYY}"],
+            "format": "#,##"
           },
           {
             "name": "Crop",
@@ -124,8 +128,8 @@
             "name": "Year",
             "type": "int",
             "description": "Reporting year",
-            "aliases": ["{YYYY}", "{YYYY-1}"],
-            "filter": "latest"
+            "source": "constant",
+            "value": "{YYYY}"
           }
         ]
       }

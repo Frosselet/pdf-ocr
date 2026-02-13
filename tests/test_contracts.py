@@ -91,11 +91,11 @@ class TestLoadContract:
         assert "Region" in col_names
         assert "Metric" in col_names
         assert "Value" in col_names
-        assert "Year" in col_names
         # Enrichment columns should NOT be in the schema
         assert "Report_date" not in col_names
         assert "Crop" not in col_names
         assert "Campaign" not in col_names
+        assert "Year" not in col_names  # Year is now enrichment (source: constant)
         # Check aliases
         region_col = next(c for c in harvest.schema.columns if c.name == "Region")
         assert isinstance(region_col, ColumnDef)

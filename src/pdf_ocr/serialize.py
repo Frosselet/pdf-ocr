@@ -195,8 +195,10 @@ def _apply_number_format(value: int | float | None, fmt: str) -> str | None:
     Supported format patterns:
         # - Plain number
         #.## - Decimal places (number of # after . determines precision)
-        #,### - Thousands separator
-        #,###.## - Both
+        #,### - Thousands separator (US)
+        #,###.## - Both (US)
+        #.###,## - Both (EU — period thousands, comma decimal)
+        #,## - Decimal only (EU comma decimal)
         +# - Explicit sign (+ for positive, - for negative)
         #% - Percentage (appends %)
         (#) - Negative in parentheses (accounting style)
@@ -204,16 +206,18 @@ def _apply_number_format(value: int | float | None, fmt: str) -> str | None:
     if value is None:
         return None
 
+    thousands_sep, decimal_sep = _parse_number_format(fmt)
+    use_thousands = bool(thousands_sep)
+
     # Parse format options
-    use_thousands = "," in fmt
     use_sign = fmt.startswith("+")
     use_percent = fmt.endswith("%")
     use_parens = fmt.startswith("(") and fmt.endswith(")")
 
-    # Determine decimal places
+    # Determine decimal places from the format pattern
     decimal_places = 0
-    if "." in fmt:
-        decimal_part = fmt.split(".")[-1]
+    if decimal_sep and decimal_sep in fmt:
+        decimal_part = fmt.split(decimal_sep)[-1]
         # Count # characters after decimal point (before any % or ))
         decimal_part = decimal_part.rstrip("%)")
         decimal_places = len(decimal_part)
@@ -228,17 +232,25 @@ def _apply_number_format(value: int | float | None, fmt: str) -> str | None:
     else:
         formatted = str(int(round(abs_value)))
 
-    # Add thousands separator
+    # Add thousands separator (always use '.' as internal decimal during formatting)
     if use_thousands:
         if "." in formatted:
             int_part, dec_part = formatted.split(".")
         else:
             int_part, dec_part = formatted, None
 
-        # Add commas to integer part
-        int_part = "{:,}".format(int(int_part.replace(",", "")))
+        # Add thousands separators using the format's thousands char
+        int_part_with_sep = "{:,}".format(int(int_part.replace(",", "")))
+        if thousands_sep != ",":
+            int_part_with_sep = int_part_with_sep.replace(",", thousands_sep)
 
-        formatted = f"{int_part}.{dec_part}" if dec_part else int_part
+        if dec_part:
+            formatted = f"{int_part_with_sep}{decimal_sep}{dec_part}"
+        else:
+            formatted = int_part_with_sep
+    elif decimal_places > 0 and decimal_sep != ".":
+        # No thousands but EU decimal separator
+        formatted = formatted.replace(".", decimal_sep)
 
     # Apply sign/parentheses
     if is_negative:
@@ -375,10 +387,56 @@ def _build_validator_model(schema: CanonicalSchema) -> type[BaseModel]:
     return create_model("RecordValidator", **fields)
 
 
-def _coerce_value(value: Any, col_type: str) -> Any:
+def _parse_number_format(fmt: str | None) -> tuple[str, str]:
+    """Detect decimal and thousands separators from a number format pattern.
+
+    When both ``,`` and ``.`` appear, the one **later** in the pattern is the
+    decimal separator.  When only one appears, it's decimal if followed by ≤2
+    ``#`` chars, otherwise thousands.
+
+    Returns:
+        ``(thousands_sep, decimal_sep)`` — each is ``","`` / ``"."`` / ``""``.
+    """
+    if not fmt:
+        return (",", ".")  # US default
+
+    # Strip non-number-format chars (sign prefix, percent suffix, parens)
+    core = fmt.lstrip("+(").rstrip("%)")
+
+    has_comma = "," in core
+    has_dot = "." in core
+
+    if has_comma and has_dot:
+        # The one later in the string is the decimal separator
+        last_comma = core.rfind(",")
+        last_dot = core.rfind(".")
+        if last_comma > last_dot:
+            return (".", ",")  # EU: #.###,##
+        else:
+            return (",", ".")  # US: #,###.##
+    elif has_comma:
+        # Only comma — decimal if ≤2 # after it, else thousands
+        after = core.split(",")[-1]
+        if len(after.replace("#", "")) == 0 and len(after) <= 2:
+            return ("", ",")  # EU decimal, no thousands
+        else:
+            return (",", "")  # US thousands, no decimal
+    elif has_dot:
+        # Only dot — decimal if ≤2 # after it, else thousands
+        after = core.split(".")[-1]
+        if len(after.replace("#", "")) == 0 and len(after) <= 2:
+            return ("", ".")  # plain decimal
+        else:
+            return (".", "")  # thousands only
+    else:
+        return (",", ".")  # fallback US default
+
+
+def _coerce_value(value: Any, col_type: str, fmt: str | None = None) -> Any:
     """Coerce a value to the expected type, handling common OCR artifacts.
 
     - Handles comma-separated numbers like "1,234" -> 1234
+    - Handles European comma-decimal like "55826,3" -> 55826.3 (when fmt indicates EU)
     - Handles percentage strings like "12.5%" -> 12.5
     - Handles whitespace and empty strings -> None
     - Handles boolean strings like "yes", "true", "1" -> True
@@ -397,30 +455,28 @@ def _coerce_value(value: Any, col_type: str) -> Any:
     if not value:
         return None
 
-    if col_type == "int":
-        # Remove commas, spaces, and currency symbols
-        cleaned = re.sub(r"[,\s$€£¥]", "", value)
+    if col_type in ("int", "float"):
+        thousands_sep, decimal_sep = _parse_number_format(fmt)
+
+        # Remove spaces and currency symbols
+        cleaned = re.sub(r"[\s$€£¥]", "", value)
         # Remove trailing percentage
         cleaned = cleaned.rstrip("%")
         # Handle parentheses for negative numbers: (123) -> -123
         if cleaned.startswith("(") and cleaned.endswith(")"):
             cleaned = "-" + cleaned[1:-1]
-        try:
-            # Try parsing as float first then convert to int (handles "1.0")
-            return int(float(cleaned))
-        except (ValueError, TypeError):
-            return None
 
-    elif col_type == "float":
-        # Remove commas, spaces, and currency symbols
-        cleaned = re.sub(r"[,\s$€£¥]", "", value)
-        # Remove trailing percentage
-        cleaned = cleaned.rstrip("%")
-        # Handle parentheses for negative numbers
-        if cleaned.startswith("(") and cleaned.endswith(")"):
-            cleaned = "-" + cleaned[1:-1]
+        # Strip thousands separator, then normalise decimal to '.'
+        if thousands_sep:
+            cleaned = cleaned.replace(thousands_sep, "")
+        if decimal_sep and decimal_sep != ".":
+            cleaned = cleaned.replace(decimal_sep, ".")
+
         try:
-            return float(cleaned)
+            if col_type == "int":
+                return int(float(cleaned))
+            else:
+                return float(cleaned)
         except (ValueError, TypeError):
             return None
 
@@ -443,6 +499,8 @@ def _flatten_and_validate(
     result: dict[int, baml_types.MappedTable] | baml_types.MappedTable,
     schema: CanonicalSchema,
     include_page: bool,
+    *,
+    format_numbers: bool = True,
 ) -> list[dict[str, Any]]:
     """Flatten MappedTable result(s) to a list of dicts, validating each record.
 
@@ -450,6 +508,8 @@ def _flatten_and_validate(
         result: Output from ``interpret_table()`` (page-keyed dict) or single MappedTable.
         schema: Canonical schema for validation.
         include_page: If True, add a ``page`` column with 1-indexed page number.
+        format_numbers: If False, skip number formatting (for typed output like
+            DataFrames/Parquet where numeric columns must stay numeric).
 
     Returns:
         List of validated record dicts with coerced values.
@@ -487,7 +547,7 @@ def _flatten_and_validate(
             for col_name in col_names:
                 raw_value = raw.get(col_name)
                 col_type = col_types.get(col_name, "string")
-                coerced[col_name] = _coerce_value(raw_value, col_type)
+                coerced[col_name] = _coerce_value(raw_value, col_type, col_by_name[col_name].format)
 
             # Validate with Pydantic
             try:
@@ -512,7 +572,11 @@ def _flatten_and_validate(
             for col_name, value in record_dict.items():
                 col = col_by_name.get(col_name)
                 if col is not None:
-                    formatted[col_name] = _apply_format(value, col)
+                    # Skip number formatting for typed output (DataFrames/Parquet)
+                    if not format_numbers and col.type in ("int", "float"):
+                        formatted[col_name] = value
+                    else:
+                        formatted[col_name] = _apply_format(value, col)
                 else:
                     formatted[col_name] = value
 
@@ -654,7 +718,7 @@ def to_parquet(
             "or: pip install pdf-ocr[parquet]"
         ) from e
 
-    records = _flatten_and_validate(result, schema, include_page)
+    records = _flatten_and_validate(result, schema, include_page, format_numbers=False)
     columns = _get_column_order(schema, include_page)
 
     # Build PyArrow schema
@@ -726,7 +790,7 @@ def to_pandas(
             "or: pip install pdf-ocr[dataframes]"
         ) from e
 
-    records = _flatten_and_validate(result, schema, include_page)
+    records = _flatten_and_validate(result, schema, include_page, format_numbers=False)
     columns = _get_column_order(schema, include_page)
 
     # Build dtype dict
@@ -784,7 +848,7 @@ def to_polars(
             "or: pip install pdf-ocr[dataframes]"
         ) from e
 
-    records = _flatten_and_validate(result, schema, include_page)
+    records = _flatten_and_validate(result, schema, include_page, format_numbers=False)
     columns = _get_column_order(schema, include_page)
 
     # Build polars schema
