@@ -674,3 +674,57 @@ class TestUnpivotStrategy:
         strategy = _resolve_unpivot(UnpivotStrategy.DETERMINISTIC)
         assert strategy == UnpivotStrategy.DETERMINISTIC
         assert strategy != UnpivotStrategy.SCHEMA_AGNOSTIC  # guard check passes
+
+    def test_resolve_unpivot_from_string(self):
+        """JSON string → UnpivotStrategy roundtrip."""
+        from pdf_ocr.interpret import UnpivotStrategy
+
+        assert UnpivotStrategy("schema_agnostic") is UnpivotStrategy.SCHEMA_AGNOSTIC
+        assert UnpivotStrategy("deterministic") is UnpivotStrategy.DETERMINISTIC
+        assert UnpivotStrategy("none") is UnpivotStrategy.NONE
+
+
+class TestInterpretPagesBatchedAsyncUnpivot:
+    """Verify _interpret_pages_batched_async respects the unpivot parameter."""
+
+    def test_deterministic_same_result_regardless_of_strategy(self):
+        """When deterministic mapping succeeds, the unpivot strategy doesn't
+        affect the result — no LLM is called either way."""
+        import asyncio
+        from pdf_ocr.interpret import (
+            CanonicalSchema,
+            ColumnDef,
+            UnpivotStrategy,
+            _interpret_pages_batched_async,
+        )
+
+        text = (
+            "| Th.ha. / Region | spring crops / MOA Target 2025 | spring crops / 2025 | "
+            "spring grain / MOA Target 2025 | spring grain / 2025 |\n"
+            "|---|---|---|---|---|\n"
+            "| Belgorod | 100 | 90 | 50 | 45 |"
+        )
+        schema = CanonicalSchema(columns=[
+            ColumnDef("region", "string", "Region", aliases=["Region"]),
+            ColumnDef("area", "float", "Area", aliases=["MOA Target 2025"]),
+            ColumnDef("value", "float", "Value", aliases=["2025"]),
+            ColumnDef("crop", "string", "Crop", aliases=["spring crops", "spring grain"]),
+            ColumnDef("unit", "string", "Unit", aliases=["Th.ha."]),
+        ])
+
+        async def _run():
+            r_agnostic = await _interpret_pages_batched_async(
+                [text], schema, unpivot=UnpivotStrategy.SCHEMA_AGNOSTIC,
+            )
+            r_none = await _interpret_pages_batched_async(
+                [text], schema, unpivot=UnpivotStrategy.NONE,
+            )
+            return r_agnostic, r_none
+
+        r_agnostic, r_none = asyncio.run(_run())
+        # Both should succeed deterministically with same record count
+        assert 1 in r_agnostic
+        assert 1 in r_none
+        assert len(r_agnostic[1].records) == len(r_none[1].records)
+        assert r_agnostic[1].metadata.model == "deterministic"
+        assert r_none[1].metadata.model == "deterministic"

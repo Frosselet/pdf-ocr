@@ -1467,6 +1467,7 @@ async def _interpret_pages_batched_async(
     fallback_model: str | None = None,
     page_images: list[str] | None = None,
     vision_model: str | None = None,
+    unpivot: UnpivotStrategy | bool = True,
 ) -> dict[int, baml_types.MappedTable]:
     """Concurrently run the 2-step pipeline with step-2 batching.
 
@@ -1485,10 +1486,15 @@ async def _interpret_pages_batched_async(
     Large tables (more than *step1_max_rows* data rows) are pre-split into
     chunks before Step 1 to prevent LLM output truncation, then merged back
     after Step 1 completes.
+
+    When *unpivot* is ``SCHEMA_AGNOSTIC``, LLM-bound pages are pre-unpivoted
+    via ``unpivot_pipe_table()`` after the deterministic check.
     """
     # Try deterministic mapping first (skip when vision is enabled)
     deterministic_results: dict[int, baml_types.MappedTable] = {}
     llm_page_indices: list[int] = []  # original 0-based indices needing LLM
+
+    strategy = _resolve_unpivot(unpivot)
 
     if page_images is None:
         for pi, page in enumerate(pages):
@@ -1502,9 +1508,16 @@ async def _interpret_pages_batched_async(
             return deterministic_results
         # Narrow pages to only those needing LLM
         llm_pages = [pages[i] for i in llm_page_indices]
+        # Unpivot for LLM only
+        if strategy == UnpivotStrategy.SCHEMA_AGNOSTIC:
+            from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
+            llm_pages = [_unpivot(p).text for p in llm_pages]
     else:
         llm_pages = pages
         llm_page_indices = list(range(len(pages)))
+        if strategy == UnpivotStrategy.SCHEMA_AGNOSTIC:
+            from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
+            llm_pages = [_unpivot(p).text for p in llm_pages]
 
     effective_vision_model = vision_model or model
 
@@ -1903,6 +1916,7 @@ def interpret_table(
             _interpret_pages_batched_async(
                 llm_pages, schema, batch_size=batch_size, step1_max_rows=step1_max_rows,
                 model=model, fallback_model=fallback_model,
+                unpivot=UnpivotStrategy.NONE,  # already unpivoted above
             )
         )
         # Remap: _interpret_pages_batched_async returns 1-indexed keys
@@ -1919,6 +1933,7 @@ def interpret_table(
                 pages, schema, batch_size=batch_size, step1_max_rows=step1_max_rows,
                 model=model, fallback_model=fallback_model,
                 page_images=page_images, vision_model=vision_model,
+                unpivot=strategy,
             )
         )
     # Non-vision multi-page: use llm_pages subset
@@ -1926,6 +1941,7 @@ def interpret_table(
         _interpret_pages_batched_async(
             llm_pages, schema, batch_size=batch_size, step1_max_rows=step1_max_rows,
             model=model, fallback_model=fallback_model,
+            unpivot=UnpivotStrategy.NONE,  # already unpivoted above
         )
     )
     for llm_page, mt in llm_result.items():

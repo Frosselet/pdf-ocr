@@ -70,11 +70,17 @@ Test PDF files including shipping statements and edge-case documents (multi-colu
 
 ### Data Contracts (`contracts/`)
 
-YAML files that declaratively define extraction pipelines: LLM model, table classification keywords, output schemas (columns, types, aliases, formats), and enrichment rules. The pipeline code in `pipeline.ipynb` is 100% generic — swap the contract, not the code.
+JSON files that declaratively define extraction pipelines: LLM model, table classification keywords, output schemas (columns, types, aliases, formats), enrichment rules, and unpivot strategy. The pipeline code in `pipeline.ipynb` is 100% generic — swap the contract, not the code.
 
-- **`ru_ag_ministry.yaml`** — Russian Ministry of Agriculture weekly grain reports (harvest + planting)
-- **`au_shipping_stem.yaml`** — Australian shipping stem vessel loading records (6 providers, 1 canonical schema)
-- **`acea_car_registrations.yaml`** — European new car registrations by market and power source
+Top-level contract fields:
+- **`provider`** — Human-readable name of the data source.
+- **`model`** — LLM model identifier (default `"openai/gpt-4o"`).
+- **`unpivot`** — Optional. Controls how pivoted tables are handled. Values: `"schema_agnostic"` (pre-unpivot for LLM, default), `"deterministic"` (deterministic mapper handles pivots, LLM sees original), `"none"` (skip all pivot handling), or boolean `true`/`false` for backward compatibility.
+- **`categories`**, **`outputs`**, **`report_date`** — See individual contracts for structure.
+
+- **`ru_ag_ministry.json`** — Russian Ministry of Agriculture weekly grain reports (harvest + planting)
+- **`au_shipping_stem.json`** — Australian shipping stem vessel loading records (6 providers, 1 canonical schema)
+- **`acea_car_registrations.json`** — European new car registrations by market and power source
 
 ## Key Constraints
 
