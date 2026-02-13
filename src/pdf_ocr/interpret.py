@@ -46,6 +46,7 @@ from baml_client.type_builder import TypeBuilder
 from baml_py import Image
 
 from pdf_ocr.heuristics import MetadataFieldDef
+from pdf_ocr.normalize import normalize_pipe_table
 from pdf_ocr.spatial_text import _open_pdf
 
 DEFAULT_MODEL = "openai/gpt-4o"
@@ -1272,6 +1273,7 @@ def interpret_table(
             (step 1).
         vision_model: LLM to use for vision step 0. Defaults to *model*.
     """
+    compressed_text = normalize_pipe_table(compressed_text)
     pages = _split_pages(compressed_text, page_separator)
 
     # Render page images when vision is enabled
@@ -1401,6 +1403,7 @@ def interpret_table_single_shot(
         fallback_model: If set, retry with this model when ``model`` fails.
         page_separator: Delimiter between pages (default ``"\\f"``).
     """
+    compressed_text = normalize_pipe_table(compressed_text)
     pages = _split_pages(compressed_text, page_separator)
 
     if len(pages) == 1:
@@ -1605,6 +1608,7 @@ async def interpret_table_async(
         model: LLM to use for both steps.
         fallback_model: If set, retry each step with this model on failure.
     """
+    compressed_text = normalize_pipe_table(compressed_text)
     parsed = await analyze_and_parse_async(compressed_text, model=model, fallback_model=fallback_model)
     result = await map_to_schema_async(parsed, schema, model=model, fallback_model=fallback_model)
     # Fix table_type: use authoritative value from step 1
@@ -1640,6 +1644,8 @@ async def interpret_tables_async(
         fallback_model: If set, retry each step with this model on failure.
         step1_max_rows: Maximum data rows per step-1 LLM call (default 40).
     """
+    compressed_texts = [normalize_pipe_table(t) for t in compressed_texts]
+
     # Pre-split large tables to prevent Step 1 output truncation
     expanded_texts: list[str] = []
     table_chunk_counts: list[int] = []

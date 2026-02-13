@@ -104,6 +104,11 @@ def extract_tables_from_html(*args, **kwargs):
     from pdf_ocr.html_extractor import extract_tables_from_html as _extract
     return _extract(*args, **kwargs)
 
+def normalize_pipe_table(*args, **kwargs):
+    """Normalize pipe-table markdown text (whitespace, smart quotes, dashes, zero-width chars)."""
+    from pdf_ocr.normalize import normalize_pipe_table as _normalize
+    return _normalize(*args, **kwargs)
+
 # Unified extractors (auto-detect format, support both old and new formats)
 def extract_tables_from_excel(*args, **kwargs):
     """Extract tables from Excel files (XLSX or XLS).
@@ -191,6 +196,8 @@ __all__ = [
     "detect_unit_patterns",
     "estimate_header_rows",
     "is_header_type_pattern",
+    # Normalization
+    "normalize_pipe_table",
     # Multi-format extractors (specific formats)
     "classify_tables",
     "classify_docx_tables",

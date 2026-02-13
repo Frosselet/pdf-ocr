@@ -43,7 +43,11 @@ DOCX file
    -- prepend section title
   |
   v
-6. interpret_table() --> serialize  (existing, no changes)
+6. normalize_pipe_table()  (automatic, inside classify/interpret)
+   -- NBSP, smart quotes, dashes, zero-width, whitespace collapse
+  |
+  v
+7. interpret_table() --> serialize
 ```
 
 ---

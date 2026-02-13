@@ -64,6 +64,8 @@ PDF
  │
  ├─► compress.py ────► Token-efficient markdown tables (40-67% smaller)
  │
+ ├─► normalize.py ──► NBSP, smart quotes, dashes, whitespace collapse
+ │
  ├─► filter.py ──────► Filter pages by fuzzy title matching
  │
  ├─► retrieval.py ───► Fast metadata extraction (dates, currency, units)
@@ -241,6 +243,7 @@ Each module has detailed documentation including all heuristics:
 | `retrieval.py` | Fast metadata extraction | (see Search & Extract section) |
 | `interpret.py` | LLM schema mapping | [INTERPRET.md](INTERPRET.md) |
 | `serialize.py` | Export to various formats | [SERIALIZE.md](SERIALIZE.md) |
+| `normalize.py` | Centralized pipe-table text normalization | (see below) |
 | `classify.py` | Format-agnostic table classification | [DOCX_EXTRACTOR.md](DOCX_EXTRACTOR.md#dh5-table-classification) |
 | `heuristics.py` | Shared semantic heuristics | (see below) |
 | `xlsx_extractor.py` | Excel extraction | (see Multi-Format section) |
@@ -305,6 +308,18 @@ Each heuristic encodes a human inference pattern. The table shows: what humans d
 | "This column always has dates" | Column type consistency | Predominant type per column |
 | "YYYY-MM-DD is a date" | Cell type detection | Pattern matching for dates/numbers |
 | "Few repeating values = enum" | Enum detection | ≤5 distinct values that repeat |
+
+### Text Normalization (`normalize.py`)
+
+> *Ensuring consistent text before classification and interpretation*
+
+| Human Inference | Heuristic | Implementation |
+|---|---|---|
+| "That's just a fancy quote" | Smart quote normalization | `\u201c`/`\u201d` → `"`, `\u2018`/`\u2019` → `'` |
+| "That dash means the same thing" | Dash normalization | En-dash/em-dash → hyphen-minus |
+| "Ignore invisible characters" | Zero-width removal | ZWSP, ZWNJ, ZWJ, BOM, WJ stripped |
+| "Extra spaces don't matter" | Whitespace collapse | Runs of 2+ spaces/tabs → single space |
+| "Non-breaking space is still a space" | NBSP normalization | `\u00a0` → regular space |
 
 ### Semantic Mapping (`interpret.py`)
 
@@ -555,6 +570,7 @@ export ANTHROPIC_API_KEY="..."  # For Claude (if configured in BAML)
 | `filter_pdf_by_table_titles()` | PDF + search terms | Filtered PDF bytes |
 | `search_and_extract()` | PDF + schema with metadata | `SearchExtractResult` |
 | `quick_scan()` | PDF + metadata fields | `dict[str, RetrievedMetadata]` |
+| `normalize_pipe_table()` | Pipe-table text | Normalized text |
 | `interpret_table()` | Compressed text + schema | `dict[int, MappedTable]` |
 | `to_csv()` / `to_parquet()` / `to_pandas()` | Result + schema | Various formats |
 

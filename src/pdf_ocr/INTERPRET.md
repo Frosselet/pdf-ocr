@@ -29,6 +29,9 @@ schema = CanonicalSchema(columns=[
 compressed text
       │
       ▼
+normalize_pipe_table()          ← NBSP, smart quotes, dashes, whitespace
+      │
+      ▼
 AnalyzeAndParseTable (GPT-4o)
       │
       ▼
@@ -51,6 +54,9 @@ MappedTable (output)
 compressed text + schema
       │
       ▼
+normalize_pipe_table()          ← same normalization
+      │
+      ▼
 InterpretTable (GPT-4o)
       │
       ▼
@@ -63,6 +69,9 @@ One LLM call. Faster but less accurate on complex tables.
 
 ```
 page image + compressed text
+      │
+      ▼
+normalize_pipe_table()          ← same normalization
       │
       ▼
 InferTableSchemaFromImage (GPT-4o vision)
@@ -228,7 +237,28 @@ results = await asyncio.gather(*[process_page(p) for p in pages])
 
 ---
 
-### H8: Fallback Model Support
+### H8: Text Normalization (`normalize_pipe_table`)
+
+**Problem**: Different extractors (DOCX, HTML, XLSX, PPTX, PDF) produce inconsistent text: NBSP characters, smart quotes, en/em-dashes, zero-width characters, and double spaces. These cause alias matching failures — e.g., `"MOA Target\u00a0\u00a02025"` (NBSP + double space) doesn't match the contract alias `"MOA Target 2025"`.
+
+**Solution**: A single normalization pass applied at the entry of every public interpretation and classification function:
+
+| Normalization | Characters | Replacement |
+|---|---|---|
+| NBSP | U+00A0 | Regular space |
+| Smart quotes | U+2018/2019, U+201C/201D | ASCII `'` and `"` |
+| Dashes | U+2013 en-dash, U+2014 em-dash | Hyphen-minus `-` |
+| Zero-width | U+200B, U+200C, U+200D, U+FEFF, U+2060 | Removed |
+| Whitespace | Runs of 2+ spaces/tabs | Single space |
+| Trailing | Trailing spaces per line | Stripped |
+
+Applied automatically in: `interpret_table()`, `interpret_table_single_shot()`, `interpret_table_async()`, `interpret_tables_async()`, and `classify_tables()`.
+
+**Idempotent**: Safe to call multiple times; already-clean text passes through unchanged.
+
+---
+
+### H9: Fallback Model Support
 
 **Problem**: Primary model might fail (rate limit, network, unavailable).
 

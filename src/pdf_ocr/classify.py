@@ -164,6 +164,10 @@ def classify_tables(
         List of dicts with ``index``, ``category``, ``title``, ``rows``,
         ``cols``.
     """
+    # Normalize pipe-table text before classification
+    from pdf_ocr.normalize import normalize_pipe_table
+    tables = [(normalize_pipe_table(md), meta) for md, meta in tables]
+
     # Lowercase all keywords once
     lower_cats = {
         name: [kw.lower() for kw in kws]
