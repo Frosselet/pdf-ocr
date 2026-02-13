@@ -34,6 +34,7 @@ Async usage (explicit parallel control across pre-split tables)::
 from __future__ import annotations
 
 import asyncio
+import enum
 import logging
 import re
 from dataclasses import dataclass, field
@@ -52,6 +53,24 @@ from pdf_ocr.spatial_text import _open_pdf
 DEFAULT_MODEL = "openai/gpt-4o"
 
 log = logging.getLogger(__name__)
+
+
+# ─── Unpivot strategy ────────────────────────────────────────────────────────
+
+
+class UnpivotStrategy(str, enum.Enum):
+    """Controls how pivoted tables are handled before interpretation."""
+
+    SCHEMA_AGNOSTIC = "schema_agnostic"  # Pre-unpivot for LLM via unpivot.py
+    DETERMINISTIC = "deterministic"  # Deterministic mapper handles pivots; LLM sees original
+    NONE = "none"  # No pivot handling at all
+
+
+def _resolve_unpivot(unpivot: UnpivotStrategy | bool) -> UnpivotStrategy:
+    """Normalize bool or enum to UnpivotStrategy."""
+    if isinstance(unpivot, bool):
+        return UnpivotStrategy.SCHEMA_AGNOSTIC if unpivot else UnpivotStrategy.NONE
+    return unpivot
 
 
 # ─── Python-side schema definition ───────────────────────────────────────────
@@ -1764,7 +1783,7 @@ def interpret_table(
     step1_max_rows: int = 40,
     pdf_path: str | bytes | Path | None = None,
     vision_model: str | None = None,
-    unpivot: bool = True,
+    unpivot: UnpivotStrategy | bool = True,
 ) -> dict[int, baml_types.MappedTable]:
     """Full 2-step pipeline: analyze+parse, then map to schema.
 
@@ -1802,12 +1821,11 @@ def interpret_table(
             enables vision-based schema inference (step 0) and guided parsing
             (step 1).
         vision_model: LLM to use for vision step 0. Defaults to *model*.
-        unpivot: When True (default), pre-unpivot pivoted tables before
-            sending to the LLM.  The deterministic mapper always runs first
-            on the original text (it handles pivoted tables natively via
-            alias-based group detection).  Pre-unpivoting only simplifies
-            what the LLM sees.
+        unpivot: Unpivoting strategy.  ``True`` (default) maps to
+            ``SCHEMA_AGNOSTIC`` (pre-unpivot for LLM), ``False`` maps to
+            ``NONE``.  Pass a ``UnpivotStrategy`` enum for explicit control.
     """
+    strategy = _resolve_unpivot(unpivot)
     compressed_text = normalize_pipe_table(compressed_text)
     pages = _split_pages(compressed_text, page_separator)
 
@@ -1832,14 +1850,14 @@ def interpret_table(
             return det_results
         # Only LLM-needed pages continue below — unpivot for LLM only
         llm_pages = [pages[i] for i in llm_needed]
-        if unpivot:
+        if strategy == UnpivotStrategy.SCHEMA_AGNOSTIC:
             from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
             llm_pages = [_unpivot(p).text for p in llm_pages]
     else:
         det_results = {}
         llm_needed = list(range(len(pages)))
         llm_pages = pages
-        if unpivot:
+        if strategy == UnpivotStrategy.SCHEMA_AGNOSTIC:
             from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
             llm_pages = [_unpivot(p).text for p in llm_pages]
 
@@ -1922,7 +1940,7 @@ def interpret_tables(
     model: str = DEFAULT_MODEL,
     fallback_model: str | None = None,
     step1_max_rows: int = 40,
-    unpivot: bool = True,
+    unpivot: UnpivotStrategy | bool = True,
 ) -> list[baml_types.MappedTable]:
     """Interpret multiple independent tables concurrently.
 
@@ -1940,11 +1958,8 @@ def interpret_tables(
         model: LLM to use for all calls.
         fallback_model: If set, retry each step with this model on failure.
         step1_max_rows: Maximum data rows per step-1 LLM call (default 40).
-        unpivot: When True (default), pre-unpivot pivoted tables before
-            sending to the LLM.  The deterministic mapper always runs first
-            on the original text (it handles pivoted tables natively via
-            alias-based group detection).  Pre-unpivoting only simplifies
-            what the LLM sees.
+        unpivot: Unpivoting strategy.  ``True`` (default) maps to
+            ``SCHEMA_AGNOSTIC``, ``False`` maps to ``NONE``.
 
     Returns:
         List of ``MappedTable`` results, one per input text, in the same
@@ -1965,7 +1980,7 @@ def interpret_table_single_shot(
     model: str = DEFAULT_MODEL,
     fallback_model: str | None = None,
     page_separator: str = "\f",
-    unpivot: bool = True,
+    unpivot: UnpivotStrategy | bool = True,
 ) -> dict[int, baml_types.MappedTable]:
     """Single-shot: analyze, parse, and map in one LLM call.
 
@@ -1989,12 +2004,10 @@ def interpret_table_single_shot(
         model: LLM to use.
         fallback_model: If set, retry with this model when ``model`` fails.
         page_separator: Delimiter between pages (default ``"\\f"``).
-        unpivot: When True (default), pre-unpivot pivoted tables before
-            sending to the LLM.  The deterministic mapper always runs first
-            on the original text (it handles pivoted tables natively via
-            alias-based group detection).  Pre-unpivoting only simplifies
-            what the LLM sees.
+        unpivot: Unpivoting strategy.  ``True`` (default) maps to
+            ``SCHEMA_AGNOSTIC``, ``False`` maps to ``NONE``.
     """
+    strategy = _resolve_unpivot(unpivot)
     compressed_text = normalize_pipe_table(compressed_text)
     pages = _split_pages(compressed_text, page_separator)
 
@@ -2012,7 +2025,7 @@ def interpret_table_single_shot(
 
     # Unpivot only LLM-needed pages
     llm_pages = [pages[i] for i in llm_needed]
-    if unpivot:
+    if strategy == UnpivotStrategy.SCHEMA_AGNOSTIC:
         from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
         llm_pages = [_unpivot(p).text for p in llm_pages]
 
@@ -2238,7 +2251,7 @@ async def interpret_table_async(
     *,
     model: str = DEFAULT_MODEL,
     fallback_model: str | None = None,
-    unpivot: bool = True,
+    unpivot: UnpivotStrategy | bool = True,
 ) -> baml_types.MappedTable:
     """Async: full 2-step pipeline for a single table.
 
@@ -2247,19 +2260,17 @@ async def interpret_table_async(
         schema: Canonical schema to map to.
         model: LLM to use for both steps.
         fallback_model: If set, retry each step with this model on failure.
-        unpivot: When True (default), pre-unpivot pivoted tables before
-            sending to the LLM.  The deterministic mapper always runs first
-            on the original text (it handles pivoted tables natively via
-            alias-based group detection).  Pre-unpivoting only simplifies
-            what the LLM sees.
+        unpivot: Unpivoting strategy.  ``True`` (default) maps to
+            ``SCHEMA_AGNOSTIC``, ``False`` maps to ``NONE``.
     """
+    strategy = _resolve_unpivot(unpivot)
     compressed_text = normalize_pipe_table(compressed_text)
     # Try deterministic mapping first (on original, non-unpivoted text)
     det = _try_deterministic(compressed_text, schema)
     if det is not None:
         return det
     # Unpivot only for the LLM path
-    if unpivot:
+    if strategy == UnpivotStrategy.SCHEMA_AGNOSTIC:
         from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
         compressed_text = _unpivot(compressed_text).text
     parsed = await analyze_and_parse_async(compressed_text, model=model, fallback_model=fallback_model)
@@ -2277,7 +2288,7 @@ async def interpret_tables_async(
     model: str = DEFAULT_MODEL,
     fallback_model: str | None = None,
     step1_max_rows: int = 40,
-    unpivot: bool = True,
+    unpivot: UnpivotStrategy | bool = True,
 ) -> list[baml_types.MappedTable]:
     """Async: interpret multiple pre-split tables in parallel.
 
@@ -2297,12 +2308,10 @@ async def interpret_tables_async(
         model: LLM to use for all calls.
         fallback_model: If set, retry each step with this model on failure.
         step1_max_rows: Maximum data rows per step-1 LLM call (default 40).
-        unpivot: When True (default), pre-unpivot pivoted tables before
-            sending to the LLM.  The deterministic mapper always runs first
-            on the original text (it handles pivoted tables natively via
-            alias-based group detection).  Pre-unpivoting only simplifies
-            what the LLM sees.
+        unpivot: Unpivoting strategy.  ``True`` (default) maps to
+            ``SCHEMA_AGNOSTIC``, ``False`` maps to ``NONE``.
     """
+    strategy = _resolve_unpivot(unpivot)
     compressed_texts = [normalize_pipe_table(t) for t in compressed_texts]
 
     # Try deterministic mapping first (on original, non-unpivoted text)
@@ -2321,7 +2330,7 @@ async def interpret_tables_async(
         return [r for r in results if r is not None]
 
     # Unpivot only LLM-needed texts
-    if unpivot:
+    if strategy == UnpivotStrategy.SCHEMA_AGNOSTIC:
         from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
         llm_texts = [_unpivot(compressed_texts[i]).text for i in llm_indices]
     else:

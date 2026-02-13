@@ -616,3 +616,61 @@ class TestUnpivotInterpretIntegration:
         # On unpivoted: deterministic fails (no alias for _pivot)
         unpivoted = unpivot_pipe_table(text).text
         assert _try_deterministic(unpivoted, schema) is None
+
+
+# ===========================================================================
+# UnpivotStrategy enum tests
+# ===========================================================================
+
+
+class TestUnpivotStrategy:
+    """Verify UnpivotStrategy enum and _resolve_unpivot() backward compat."""
+
+    def test_bool_true_maps_to_schema_agnostic(self):
+        from pdf_ocr.interpret import UnpivotStrategy, _resolve_unpivot
+        assert _resolve_unpivot(True) is UnpivotStrategy.SCHEMA_AGNOSTIC
+
+    def test_bool_false_maps_to_none(self):
+        from pdf_ocr.interpret import UnpivotStrategy, _resolve_unpivot
+        assert _resolve_unpivot(False) is UnpivotStrategy.NONE
+
+    def test_enum_passthrough(self):
+        from pdf_ocr.interpret import UnpivotStrategy, _resolve_unpivot
+        assert _resolve_unpivot(UnpivotStrategy.DETERMINISTIC) is UnpivotStrategy.DETERMINISTIC
+        assert _resolve_unpivot(UnpivotStrategy.SCHEMA_AGNOSTIC) is UnpivotStrategy.SCHEMA_AGNOSTIC
+        assert _resolve_unpivot(UnpivotStrategy.NONE) is UnpivotStrategy.NONE
+
+    def test_deterministic_strategy_skips_unpivot(self):
+        """With DETERMINISTIC strategy, the deterministic mapper handles pivots
+        natively and the LLM path should NOT pre-unpivot."""
+        from pdf_ocr.interpret import (
+            CanonicalSchema,
+            ColumnDef,
+            UnpivotStrategy,
+            _resolve_unpivot,
+            _try_deterministic,
+        )
+
+        text = (
+            "| Th.ha. / Region | spring crops / MOA Target 2025 | spring crops / 2025 | "
+            "spring grain / MOA Target 2025 | spring grain / 2025 |\n"
+            "|---|---|---|---|---|\n"
+            "| Belgorod | 100 | 90 | 50 | 45 |"
+        )
+        schema = CanonicalSchema(columns=[
+            ColumnDef("region", "string", "Region", aliases=["Region"]),
+            ColumnDef("area", "float", "Area", aliases=["MOA Target 2025"]),
+            ColumnDef("value", "float", "Value", aliases=["2025"]),
+            ColumnDef("crop", "string", "Crop", aliases=["spring crops", "spring grain"]),
+            ColumnDef("unit", "string", "Unit", aliases=["Th.ha."]),
+        ])
+
+        # Deterministic succeeds on original text
+        result = _try_deterministic(text, schema)
+        assert result is not None
+        assert len(result.records) == 2
+
+        # With DETERMINISTIC strategy, the guard should NOT unpivot
+        strategy = _resolve_unpivot(UnpivotStrategy.DETERMINISTIC)
+        assert strategy == UnpivotStrategy.DETERMINISTIC
+        assert strategy != UnpivotStrategy.SCHEMA_AGNOSTIC  # guard check passes

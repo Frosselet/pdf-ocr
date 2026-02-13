@@ -37,6 +37,7 @@ from pdf_ocr.report_date import ReportDateConfig, resolve_report_date
 from pdf_ocr.interpret import (
     CanonicalSchema,
     ColumnDef,
+    UnpivotStrategy,
     infer_table_schema_from_image,
     interpret_table,
     interpret_table_single_shot,
@@ -168,6 +169,7 @@ __all__ = [
     "SerializationValidationError",
     "StructuredTable",
     "TableMetadata",
+    "UnpivotStrategy",
     "ValidationResult",
     "VisualElements",
     "VisualFill",
