@@ -95,6 +95,8 @@ YAML files that declaratively define extraction pipelines: LLM model, table clas
 
 ## Testing Guidelines
 
+- **Bug fixes must be validated against the original failing case first.** When a concrete bug triggers a fix (e.g., "spring grain columns are wrong in the June DOCX"), the very first test is to reproduce the failure end-to-end and confirm the fix resolves it. Run the actual pipeline on the actual document. Inspect the actual output. Only after the real-world case is confirmed fixed should you write unit tests for edge cases and regressions. Unit tests prove the mechanism works in isolation; they do NOT prove the bug is fixed. A normalizer that passes 34 unit tests but was never run against the document that exposed the problem is untested where it matters.
+
 - **Rigorous, not superficial**: Don't just check that code runs or that output "looks right". Verify actual content accuracy — column names must match the source PDF exactly, data values must be in correct columns, order must be preserved.
 
 - **Compare against source**: For compress/header refinement changes, compare LLM output against the actual PDF. Open the PDF, read the header text, and verify the output matches character-for-character.
