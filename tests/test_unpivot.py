@@ -559,3 +559,60 @@ class TestEdgeCases:
         assert result.was_transformed
         assert "## Table 4" in result.text
         assert "Some descriptive text" in result.text
+
+
+# ===========================================================================
+# Integration: unpivot ordering in interpret_table()
+# ===========================================================================
+
+
+class TestUnpivotInterpretIntegration:
+    """Verify that interpret_table() tries deterministic BEFORE unpivoting."""
+
+    def test_deterministic_fires_on_pivoted_table(self):
+        """Russian planting pattern: deterministic mapper handles compound headers
+        natively. Pre-unpivoting should NOT prevent this."""
+        from pdf_ocr.interpret import CanonicalSchema, ColumnDef, _try_deterministic
+
+        text = (
+            "| Th.ha. / Region | spring crops / MOA Target 2025 | spring crops / 2025 | "
+            "spring grain / MOA Target 2025 | spring grain / 2025 |\n"
+            "|---|---|---|---|---|\n"
+            "| Belgorod | 100 | 90 | 50 | 45 |"
+        )
+        schema = CanonicalSchema(columns=[
+            ColumnDef("region", "string", "Region", aliases=["Region"]),
+            ColumnDef("area", "float", "Area", aliases=["MOA Target 2025"]),
+            ColumnDef("value", "float", "Value", aliases=["2025"]),
+            ColumnDef("crop", "string", "Crop", aliases=["spring crops", "spring grain"]),
+            ColumnDef("unit", "string", "Unit", aliases=["Th.ha."]),
+        ])
+
+        # Deterministic should succeed on ORIGINAL text (before unpivoting)
+        result = _try_deterministic(text, schema)
+        assert result is not None
+        assert len(result.records) == 2  # 1 row x 2 crop groups
+
+    def test_unpivot_only_helps_llm_path(self):
+        """After pre-unpivoting, _pivot column is unmatched -> deterministic fails.
+        This confirms that unpivoting must happen AFTER the deterministic attempt."""
+        from pdf_ocr.interpret import CanonicalSchema, ColumnDef, _try_deterministic
+
+        text = (
+            "| Region | A / X | A / Y | B / X | B / Y |\n"
+            "|---|---|---|---|---|\n"
+            "| r1 | 1 | 2 | 3 | 4 |"
+        )
+        schema = CanonicalSchema(columns=[
+            ColumnDef("region", "string", "Region", aliases=["Region"]),
+            ColumnDef("group", "string", "Group", aliases=["A", "B"]),
+            ColumnDef("x", "float", "X", aliases=["X"]),
+            ColumnDef("y", "float", "Y", aliases=["Y"]),
+        ])
+
+        # On original: deterministic succeeds
+        assert _try_deterministic(text, schema) is not None
+
+        # On unpivoted: deterministic fails (no alias for _pivot)
+        unpivoted = unpivot_pipe_table(text).text
+        assert _try_deterministic(unpivoted, schema) is None
