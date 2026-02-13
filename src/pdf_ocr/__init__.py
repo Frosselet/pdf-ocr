@@ -41,6 +41,12 @@ from pdf_ocr.contracts import (
     enrich_dataframe,
     format_dataframe,
 )
+from pdf_ocr.pipeline import (
+    DocumentResult,
+    compress_and_classify_async,
+    interpret_output_async,
+    process_document_async,
+)
 from pdf_ocr.report_date import ReportDateConfig, resolve_report_date
 from pdf_ocr.interpret import (
     CanonicalSchema,
@@ -166,6 +172,11 @@ __all__ = [
     "resolve_year_templates",
     "enrich_dataframe",
     "format_dataframe",
+    # Pipeline orchestration
+    "DocumentResult",
+    "compress_and_classify_async",
+    "interpret_output_async",
+    "process_document_async",
     # Core types
     "CanonicalSchema",
     "CellType",
