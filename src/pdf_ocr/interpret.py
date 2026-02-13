@@ -1203,14 +1203,8 @@ def _map_to_schema_deterministic(
         if has_matches:
             # Column has matched parts — unmatched parts are annotations (skip)
             continue
-        # Column has NO matches at all — check if it's skippable
-        all_skippable = all(
-            p in ("%", "%%", "pct", "share") for p in info["unmatched"]
-        )
-        if all_skippable:
-            continue
-        # Entirely unmatched column — flag for LLM fallback
-        unmatched_parts.extend(info["unmatched"])
+        # Column has NO matches at all — the schema doesn't need this
+        # column. Drop silently (appears in unmapped_columns for transparency).
 
     if unmatched_parts:
         return None, unmatched_parts

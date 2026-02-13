@@ -593,9 +593,14 @@ class TestUnpivotInterpretIntegration:
         assert result is not None
         assert len(result.records) == 2  # 1 row x 2 crop groups
 
-    def test_unpivot_only_helps_llm_path(self):
-        """After pre-unpivoting, _pivot column is unmatched -> deterministic fails.
-        This confirms that unpivoting must happen AFTER the deterministic attempt."""
+    def test_unpivot_deterministic_drops_pivot_column(self):
+        """After pre-unpivoting, _pivot column is unmatched but silently dropped.
+
+        The deterministic mapper still succeeds on the unpivoted table because
+        unmatched columns (like _pivot) are dropped rather than triggering LLM
+        fallback. The original (non-unpivoted) text is still preferred because
+        the deterministic mapper handles compound headers natively.
+        """
         from pdf_ocr.interpret import CanonicalSchema, ColumnDef, _try_deterministic
 
         text = (
@@ -610,12 +615,15 @@ class TestUnpivotInterpretIntegration:
             ColumnDef("y", "float", "Y", aliases=["Y"]),
         ])
 
-        # On original: deterministic succeeds
-        assert _try_deterministic(text, schema) is not None
+        # On original: deterministic succeeds with native unpivot
+        original_result = _try_deterministic(text, schema)
+        assert original_result is not None
 
-        # On unpivoted: deterministic fails (no alias for _pivot)
+        # On unpivoted: deterministic also succeeds (_pivot column dropped)
         unpivoted = unpivot_pipe_table(text).text
-        assert _try_deterministic(unpivoted, schema) is None
+        unpivoted_result = _try_deterministic(unpivoted, schema)
+        assert unpivoted_result is not None
+        assert "_pivot" in unpivoted_result.unmapped_columns
 
 
 # ===========================================================================

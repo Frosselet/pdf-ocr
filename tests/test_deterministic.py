@@ -143,8 +143,8 @@ class TestMapToSchema:
         assert result.records[0].vessel == "Star"
         assert result.records[0].tonnage == "5000"
 
-    def test_unmatched_parts_flag_for_fallback(self) -> None:
-        """Unmatched header parts trigger LLM fallback."""
+    def test_unmatched_columns_dropped_not_blocking(self) -> None:
+        """Unmatched columns are silently dropped, not triggering LLM fallback."""
         parsed = _DeterministicParsed(
             title=None,
             headers=["Port", "Unknown Column"],
@@ -156,8 +156,11 @@ class TestMapToSchema:
             ("port", "string", "Port", ["Port"]),
         )
         result, unmatched = _map_to_schema_deterministic(parsed, schema)
-        assert unmatched  # should contain info about Unknown Column
-        assert result is None
+        assert not unmatched
+        assert result is not None
+        assert result.records[0].port == "A"
+        # Unknown Column appears in unmapped_columns for transparency
+        assert any("Unknown Column" in col for col in result.unmapped_columns)
 
     def test_empty_table(self) -> None:
         parsed = _DeterministicParsed(
@@ -408,8 +411,17 @@ class TestTryDeterministic:
         assert len(result.records) == 1
         assert result.records[0].port == "Melbourne"
 
-    def test_returns_none_on_unmatched(self) -> None:
+    def test_drops_unmatched_columns(self) -> None:
+        """Unmatched columns are dropped; mapping still succeeds."""
         text = "| Port | Mystery |\n|---|---|\n| A | B |"
+        schema = _schema(("port", "string", "Port", ["Port"]))
+        result = _try_deterministic(text, schema)
+        assert result is not None
+        assert result.records[0].port == "A"
+
+    def test_returns_none_when_all_unmatched(self) -> None:
+        """All columns unmatched → no measures/groups → falls back to LLM."""
+        text = "| Foo | Bar |\n|---|---|\n| A | B |"
         schema = _schema(("port", "string", "Port", ["Port"]))
         result = _try_deterministic(text, schema)
         assert result is None
@@ -462,6 +474,99 @@ class TestRussianPlantingIntegration:
         assert len(sg_belgorod) == 1
         assert sg_belgorod[0].area == "50"
         assert sg_belgorod[0].value == "45"
+
+
+class TestUnmatchedColumnDrop:
+    """Tests for silently dropping unmatched columns."""
+
+    def test_unmatched_columns_with_compound_headers(self) -> None:
+        """Th.ha. / Final 2024 type columns resolve deterministically.
+
+        These columns are partially matched (Th.ha. matches a dimension),
+        so unmatched parts (MOA 2024, Final 2024) are treated as annotations.
+        """
+        parsed = _DeterministicParsed(
+            title=None,
+            headers=[
+                "Th.ha. / Region",
+                "Th.ha. / MOA 2024",
+                "Th.ha. / Final 2024",
+                "spring crops / 2025",
+                "spring grain / 2025",
+            ],
+            data_rows=[["Russia", "ref1", "ref2", "90", "45"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            ("value", "float", "Value", ["2025"]),
+            ("crop", "string", "Crop", ["spring crops", "spring grain"]),
+            ("unit", "string", "Unit", ["Th.ha."]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert not unmatched
+        assert result is not None
+        assert len(result.records) == 2
+        # Values from the correct columns (not shifted)
+        sc = [r for r in result.records if r.crop == "spring crops"][0]
+        assert sc.value == "90"
+        sg = [r for r in result.records if r.crop == "spring grain"][0]
+        assert sg.value == "45"
+
+    def test_fully_unmatched_column_in_unmapped(self) -> None:
+        """Entirely unmatched column appears in unmapped_columns."""
+        parsed = _DeterministicParsed(
+            title=None,
+            headers=["Port", "Tonnage", "Random Notes"],
+            data_rows=[["Melbourne", "5000", "some note"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("port", "string", "Port", ["Port"]),
+            ("tonnage", "float", "Tonnage", ["Tonnage"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert not unmatched
+        assert result is not None
+        assert "Random Notes" in result.unmapped_columns
+
+    def test_all_columns_unmatched_falls_back(self) -> None:
+        """Table where no column matches any alias returns None (LLM fallback)."""
+        parsed = _DeterministicParsed(
+            title=None,
+            headers=["Foo", "Bar", "Baz"],
+            data_rows=[["1", "2", "3"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("port", "string", "Port", ["Port"]),
+            ("vessel", "string", "Vessel", ["Vessel"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        # No measures or groups found → returns None for LLM fallback
+        assert result is None
+
+    def test_empty_header_column_dropped(self) -> None:
+        """Empty-string header column is silently dropped."""
+        parsed = _DeterministicParsed(
+            title=None,
+            headers=["Region", "", "Area"],
+            data_rows=[["Russia", "junk", "100"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            ("area", "float", "Area", ["Area"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert not unmatched
+        assert result is not None
+        assert result.records[0].region == "Russia"
+        assert result.records[0].area == "100"
 
 
 class TestACEAIntegration:
