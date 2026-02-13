@@ -1,0 +1,134 @@
+{
+  "provider": "ru_ag_ministry",
+  "description": "Russian Ministry of Agriculture weekly grain reports",
+  "model": "openai/gpt-4o",
+
+  "report_date": {
+    "source": "filename",
+    "hint": "Weekly report date period after 'EOW', e.g. 'June 20-21'"
+  },
+
+  "categories": {
+    "harvest": {
+      "keywords": [
+        "area harvested", "yield", "collected", "bunker",
+        "centner", "harvested area", "crop harvested"
+      ]
+    },
+    "planting": {
+      "keywords": [
+        "spring crops", "moa target", "spring wheat", "spring barley",
+        "sown area", "planting", "sowing", "planted"
+      ]
+    },
+    "export": {
+      "keywords": ["export", "shipment", "ports", "fob", "vessel", "cargo"]
+    }
+  },
+
+  "outputs": {
+    "harvest": {
+      "category": "harvest",
+      "filename": "harvest.parquet",
+      "schema": {
+        "description": "Harvest progress by region, metric, and year",
+        "columns": [
+          {
+            "name": "Region",
+            "type": "string",
+            "description": "Geographic region",
+            "aliases": ["Region"]
+          },
+          {
+            "name": "Report_date",
+            "type": "string",
+            "description": "Reporting period label",
+            "source": "report_date"
+          },
+          {
+            "name": "Crop",
+            "type": "string",
+            "description": "Crop name",
+            "source": "title"
+          },
+          {
+            "name": "Campaign",
+            "type": "string",
+            "description": "Campaign type",
+            "source": "constant",
+            "value": "HARVESTING"
+          },
+          {
+            "name": "Metric",
+            "type": "string",
+            "description": "Measurement type — one of the source table column headers (e.g. 'Area harvested', 'collected', 'Yield')",
+            "aliases": ["Area harvested", "collected", "Yield"]
+          },
+          {
+            "name": "Value",
+            "type": "float",
+            "description": "Numeric value for the metric",
+            "aliases": ["{YYYY}", "{YYYY-1}"]
+          },
+          {
+            "name": "Year",
+            "type": "int",
+            "description": "Reporting year",
+            "aliases": ["{YYYY}", "{YYYY-1}"]
+          }
+        ]
+      }
+    },
+    "planting": {
+      "category": "planting",
+      "filename": "planting.parquet",
+      "schema": {
+        "description": "Planting/sowing progress by region and crop",
+        "columns": [
+          {
+            "name": "Region",
+            "type": "string",
+            "description": "Geographic region",
+            "aliases": ["Region"]
+          },
+          {
+            "name": "Area",
+            "type": "float",
+            "description": "MoA target area — the 'MOA Target YYYY' column in the source table",
+            "aliases": ["MOA Target {YYYY}"]
+          },
+          {
+            "name": "Value",
+            "type": "float",
+            "description": "Actual sown area — the plain year column (e.g. '2025') that has ONLY a 4-digit year, no prefix like 'MOA Target' or 'Final' or 'MOA'",
+            "aliases": ["{YYYY}", "{YYYY-1}"]
+          },
+          {
+            "name": "Crop",
+            "type": "string",
+            "description": "Crop name — the group prefix in compound headers (e.g. 'SUNFLOWER' from 'SUNFLOWER / MOA Target 2025')",
+            "aliases": [
+              "spring crops", "spring grain", "spring wheat", "spring barley",
+              "corn", "rice", "buckwheat", "sunflower", "soya", "rape"
+            ],
+            "format": "lowercase"
+          },
+          {
+            "name": "Report_date",
+            "type": "string",
+            "description": "Reporting period label",
+            "source": "report_date",
+            "suffix": " interim report"
+          },
+          {
+            "name": "Year",
+            "type": "int",
+            "description": "Reporting year",
+            "aliases": ["{YYYY}", "{YYYY-1}"],
+            "filter": "latest"
+          }
+        ]
+      }
+    }
+  }
+}

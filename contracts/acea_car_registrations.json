@@ -1,0 +1,55 @@
+{
+  "provider": "acea_car_registrations",
+  "description": "European new car registrations by market and power source",
+  "model": "openai/gpt-4o",
+  "source_format": "pdf",
+
+  "categories": {
+    "registrations": {
+      "keywords": [
+        "registration", "market", "power source", "battery", "electric",
+        "hybrid", "petrol", "diesel", "country", "monthly"
+      ]
+    }
+  },
+
+  "outputs": {
+    "registrations_by_market": {
+      "category": "registrations",
+      "filename": "car_registrations.parquet",
+      "schema": {
+        "description": "New car registrations unpivoted by country and power source",
+        "columns": [
+          {
+            "name": "country",
+            "type": "string",
+            "description": "Country or regional aggregate — the row label in column A",
+            "aliases": [],
+            "format": "titlecase"
+          },
+          {
+            "name": "car_motorization",
+            "type": "string",
+            "description": "Vehicle power source category — extracted from hierarchical column headers (e.g. 'BATTERY ELECTRIC', 'PLUG-IN HYBRID')",
+            "aliases": ["battery electric", "plug-in hybrid", "hybrid electric", "others", "petrol", "diesel"],
+            "format": "titlecase"
+          },
+          {
+            "name": "new_car_registration",
+            "type": "int",
+            "description": "Number of new car registrations in the period",
+            "aliases": [],
+            "format": "#,###"
+          },
+          {
+            "name": "date",
+            "type": "string",
+            "description": "Registration period (YYYY-MM from column header year and document context month)",
+            "aliases": [],
+            "format": "YYYY-MM"
+          }
+        ]
+      }
+    }
+  }
+}

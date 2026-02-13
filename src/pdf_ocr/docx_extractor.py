@@ -272,6 +272,32 @@ def _build_grid_from_table(table: "Table") -> tuple[list[list[str]], list[list[D
     return grid, styles
 
 
+def _is_header_like_row(row: list[str]) -> bool:
+    """Check if a row looks like a sub-header (mostly text, not data).
+
+    Counts how many non-empty cells parse as numeric values. Cells that are
+    exactly 4-digit years (e.g. "2025") are NOT counted as numeric because
+    they commonly appear in sub-header rows as year labels.
+
+    Returns True if fewer than 50% of non-empty cells are numeric.
+    """
+    non_empty = [c.strip() for c in row if c.strip()]
+    if not non_empty:
+        return False
+    numeric_count = 0
+    for cell in non_empty:
+        cleaned = cell.replace(",", ".").replace("\u00a0", "").replace(" ", "")
+        try:
+            float(cleaned)
+            # 4-digit integers are likely year labels, not data
+            if len(cleaned) == 4 and cleaned.isdigit():
+                continue
+            numeric_count += 1
+        except ValueError:
+            pass
+    return numeric_count / len(non_empty) < 0.5
+
+
 def _detect_header_rows_from_merges(table: "Table", *, max_scan: int = 10) -> int:
     """Detect how many leading rows are headers using merge information.
 
@@ -776,6 +802,20 @@ def compress_docx_tables(
 
         # Detect header rows from merge information
         header_count = _detect_header_rows_from_merges(table)
+
+        # Content-based extension: if the row right after merge-detected
+        # headers looks like a sub-header (mostly text/labels) but the row
+        # after that is clearly data (mostly numeric), bump header_count.
+        # This catches tables where row 0 has group spans ("spring crops")
+        # and row 1 has metric labels ("MOA Target 2025") without merges.
+        if (
+            header_count >= 1
+            and header_count < len(grid)
+            and header_count + 1 < len(grid)
+            and _is_header_like_row(grid[header_count])
+            and not _is_header_like_row(grid[header_count + 1])
+        ):
+            header_count += 1
 
         # Detect title: if row 0 has only one non-empty cell, treat as title
         title: str | None = None

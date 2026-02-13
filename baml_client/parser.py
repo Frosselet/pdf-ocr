@@ -42,6 +42,12 @@ class LlmResponseParser:
         __result__ = self.__options.merge_options(baml_options).parse_response(function_name="DetectAndStructureTable", llm_response=llm_response, mode="request")
         return typing.cast(types.DetectedTable, __result__)
 
+    def ExtractReportDate(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> str:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="ExtractReportDate", llm_response=llm_response, mode="request")
+        return typing.cast(str, __result__)
+
     def ExtractResume(
         self, llm_response: str, baml_options: BamlCallOptions = {},
     ) -> types.Resume:
@@ -91,6 +97,12 @@ class LlmStreamParser:
     ) -> stream_types.DetectedTable:
         __result__ = self.__options.merge_options(baml_options).parse_response(function_name="DetectAndStructureTable", llm_response=llm_response, mode="stream")
         return typing.cast(stream_types.DetectedTable, __result__)
+
+    def ExtractReportDate(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> str:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="ExtractReportDate", llm_response=llm_response, mode="stream")
+        return typing.cast(str, __result__)
 
     def ExtractResume(
         self, llm_response: str, baml_options: BamlCallOptions = {},

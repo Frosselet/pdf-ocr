@@ -33,6 +33,7 @@ from pdf_ocr.retrieval import (
     search_and_extract,
     validate_metadata,
 )
+from pdf_ocr.report_date import ReportDateConfig, resolve_report_date
 from pdf_ocr.interpret import (
     CanonicalSchema,
     ColumnDef,
@@ -156,6 +157,9 @@ __all__ = [
     "VisualElements",
     "VisualFill",
     "VisualLine",
+    "ReportDateConfig",
+    # Report date
+    "resolve_report_date",
     # PDF functions
     "apply_fallbacks",
     "compress_spatial_text",
