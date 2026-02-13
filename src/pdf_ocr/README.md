@@ -327,11 +327,14 @@ Each heuristic encodes a human inference pattern. The table shows: what humans d
 
 | Human Inference | Heuristic | Implementation |
 |---|---|---|
+| "Labels are rows, not columns" | Transposed table detection | Column count 2–5, ≥50% label-alias match in column 0 |
+| "Same columns, different layout per section" | Re-header column remapping | Match named cells between section re-header and global header |
+| "That header text matches despite formatting" | Alias normalization | Case, whitespace, paren spacing, quote stripping via `_normalize_for_alias_match()` |
+| "Section header is the port name" | Section-to-schema mapping | Section labels matched against schema column aliases |
 | "This is a pivot table" | Table type classification | Structural pattern matching |
 | "The LLM miscounted section rows" | Section boundary validation | Deterministic pipe-row counting |
 | "Step 1 will truncate this big table" | Step-1 pre-splitting | Pre-split into `step1_max_rows` chunks |
 | "Too many rows for one LLM call" | Step-2 batching | Section-aware chunking |
-| "Port name is in the section header" | Context inference | Schema column without aliases |
 | "Vision made it worse, not better" | Vision cross-validation | Column count verification |
 
 ### Metadata Retrieval (`retrieval.py`)

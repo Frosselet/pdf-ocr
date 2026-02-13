@@ -14,9 +14,12 @@ from pdf_ocr.interpret import (
     CanonicalSchema,
     ColumnDef,
     _DeterministicParsed,
+    _normalize_for_alias_match,
     _parse_pipe_table_deterministic,
+    _parse_transposed_pipe_sections,
     _map_to_schema_deterministic,
     _try_deterministic,
+    _try_deterministic_transposed,
 )
 
 
@@ -731,3 +734,379 @@ class TestOverlappingAliases:
         assert sc_kras.region == "Krasnodar"
         assert sc_kras.area == "200"
         assert sc_kras.value == "180"
+
+
+# ─── TestNormalizeForAliasMatch ──────────────────────────────────────────────
+
+
+class TestNormalizeForAliasMatch:
+    """Tests for _normalize_for_alias_match()."""
+
+    def test_case_insensitive(self) -> None:
+        assert _normalize_for_alias_match("ETA") == "eta"
+        assert _normalize_for_alias_match("Vessel Name") == "vessel name"
+
+    def test_paren_spacing(self) -> None:
+        assert _normalize_for_alias_match("Quantity(tonnes)") == "quantity (tonnes)"
+        assert _normalize_for_alias_match("Quantity (tonnes)") == "quantity (tonnes)"
+        assert _normalize_for_alias_match("Quantity  (  tonnes  )") == "quantity (tonnes)"
+
+    def test_whitespace_collapse(self) -> None:
+        assert _normalize_for_alias_match("  Name   of   Ship  ") == "name of ship"
+
+    def test_mixed(self) -> None:
+        assert _normalize_for_alias_match("QUANTITY(TONNES)") == "quantity (tonnes)"
+
+    def test_double_quote_stripping(self) -> None:
+        assert _normalize_for_alias_match('"Loading ""commenced"" or ""completed"""') == "loading commenced or completed"
+
+    def test_quotes_in_alias(self) -> None:
+        assert _normalize_for_alias_match('Loading "commenced" or "completed"') == "loading commenced or completed"
+
+
+# ─── TestTransposedTable ────────────────────────────────────────────────────
+
+
+class TestParseTransposedPipeSections:
+    """Tests for _parse_transposed_pipe_sections()."""
+
+    def test_basic_pipe_rows(self) -> None:
+        text = (
+            "| Name | Alice | Bob |\n"
+            "|---|---|---|\n"
+            "| Age | 25 | 30 |"
+        )
+        rows = _parse_transposed_pipe_sections(text)
+        assert rows is not None
+        assert len(rows) == 2  # separator skipped
+        assert rows[0] == ["Name", "Alice", "Bob"]
+        assert rows[1] == ["Age", "25", "30"]
+
+    def test_multiple_fragments(self) -> None:
+        """Multiple pipe-table fragments on one page (Queensland pattern)."""
+        text = (
+            "| Ref | QB001 | QB002 |\n"
+            "|---|---|---|\n"
+            "| Ship | STAR | MOON |\n"
+            "Some text in between\n"
+            "| Port | Brisbane | Brisbane |\n"
+            "|---|---|---|\n"
+            "| ETA | 01-09-2025 | 15-09-2025 |"
+        )
+        rows = _parse_transposed_pipe_sections(text)
+        assert rows is not None
+        assert len(rows) == 4
+
+    def test_inconsistent_column_count_returns_none(self) -> None:
+        text = "| A | B |\n|---|---|\n| X | Y | Z |"
+        assert _parse_transposed_pipe_sections(text) is None
+
+    def test_no_pipe_rows_returns_none(self) -> None:
+        text = "Just plain text\nNo tables here"
+        assert _parse_transposed_pipe_sections(text) is None
+
+    def test_single_column_returns_none(self) -> None:
+        text = "| A |\n|---|\n| 1 |"
+        assert _parse_transposed_pipe_sections(text) is None
+
+    def test_csv_continuation_joined(self) -> None:
+        """Unterminated CSV-quoted first cell gets continuation joined."""
+        text = (
+            '|"Loading ""commenced"" or|Completed|Completed|\n'
+            "\n"
+            '""completed"""\n'
+        )
+        rows = _parse_transposed_pipe_sections(text)
+        assert rows is not None
+        assert len(rows) == 1
+        assert rows[0][0] == '"Loading ""commenced"" or ""completed"""'
+        assert rows[0][1] == "Completed"
+
+    def test_non_csv_continuation_not_joined(self) -> None:
+        """Non-CSV text across blank line is NOT joined."""
+        text = (
+            "| Time of Ship | 14:00 | 15:00 |\n"
+            "\n"
+            "Date of Arrival\n"
+            "\n"
+            "| Port | Brisbane | Sydney |"
+        )
+        rows = _parse_transposed_pipe_sections(text)
+        assert rows is not None
+        assert len(rows) == 2
+        assert rows[0][0] == "Time of Ship"
+        assert rows[1][0] == "Port"
+
+    def test_empty_first_cell_skipped(self) -> None:
+        """Pipe rows with empty first cell are skipped (not labels)."""
+        text = (
+            "| Name | Alice | Bob |\n"
+            "|---|---|---|\n"
+            "|| extra | data |\n"
+            "| Age | 25 | 30 |"
+        )
+        rows = _parse_transposed_pipe_sections(text)
+        assert rows is not None
+        assert len(rows) == 2
+        assert rows[0][0] == "Name"
+        assert rows[1][0] == "Age"
+
+
+class TestTryDeterministicTransposed:
+    """Tests for _try_deterministic_transposed()."""
+
+    def test_basic_transposed_2_vessels(self) -> None:
+        text = (
+            "| Ref # | QB001 | QB002 |\n"
+            "|---|---|---|\n"
+            "| Ship Name | STAR | MOON |\n"
+            "| Port | Brisbane | Sydney |\n"
+            "|---|---|---|\n"
+            "| ETA | 2025-09-01 | 2025-09-15 |\n"
+            "| Tonnes | 30000 | 50000 |\n"
+            "| Commodity | Wheat | Barley |"
+        )
+        schema = _schema(
+            ("ref_id", "string", "Ref", ["Ref #"]),
+            ("vessel_name", "string", "Vessel", ["Ship Name"]),
+            ("load_port", "string", "Port", ["Port"]),
+            ("eta", "string", "ETA", ["ETA"]),
+            ("tons", "int", "Tonnes", ["Tonnes"]),
+            ("commodity", "string", "Commodity", ["Commodity"]),
+        )
+        result = _try_deterministic_transposed(text, schema)
+        assert result is not None
+        assert len(result.records) == 2
+        assert result.records[0].vessel_name == "STAR"
+        assert result.records[0].load_port == "Brisbane"
+        assert result.records[0].tons == "30000"
+        assert result.records[1].vessel_name == "MOON"
+        assert result.records[1].eta == "2025-09-15"
+        assert result.metadata.table_type_inference.table_type == baml_types.TableType.TransposedTable
+
+    def test_multi_section_transposed(self) -> None:
+        """Multiple pipe-table fragments (Queensland pattern)."""
+        text = (
+            "| Ref | QB001 | QB002 |\n"
+            "|---|---|---|\n"
+            "| Ship Name | DARYA | ADAGIO |\n"
+            "Some non-pipe text\n"
+            "| Port | Brisbane | Brisbane |\n"
+            "|---|---|---|\n"
+            "| ETA | 15-09-2025 | 21-07-2025 |\n"
+            "| Exporter | Arrow | Arrow |\n"
+            "| Quantity (tonnes) | 30000 | 30000 |\n"
+            "| Commodity | Wheat | Wheat |"
+        )
+        schema = _schema(
+            ("ref_id", "string", "Ref", ["Ref"]),
+            ("vessel_name", "string", "Vessel", ["Ship Name"]),
+            ("load_port", "string", "Port", ["Port"]),
+            ("eta", "string", "ETA", ["ETA"]),
+            ("shipper", "string", "Shipper", ["Exporter"]),
+            ("tons", "int", "Tonnes", ["Quantity (tonnes)"]),
+            ("commodity", "string", "Commodity", ["Commodity"]),
+        )
+        result = _try_deterministic_transposed(text, schema)
+        assert result is not None
+        assert len(result.records) == 2
+        assert result.records[0].vessel_name == "DARYA"
+        assert result.records[0].tons == "30000"
+
+    def test_whitespace_normalization(self) -> None:
+        """Quantity(tonnes) matches Quantity (tonnes) via normalization."""
+        text = (
+            "| Ship Name | STAR | MOON |\n"
+            "|---|---|---|\n"
+            "| Quantity(tonnes) | 30000 | 50000 |"
+        )
+        schema = _schema(
+            ("vessel_name", "string", "Vessel", ["Ship Name"]),
+            ("tons", "int", "Tonnes", ["Quantity (tonnes)"]),
+        )
+        result = _try_deterministic_transposed(text, schema)
+        assert result is not None
+        assert result.records[0].tons == "30000"
+        assert result.records[1].tons == "50000"
+
+    def test_below_50_pct_match_returns_none(self) -> None:
+        """Low match ratio → not transposed."""
+        text = (
+            "| Unknown Field | A | B |\n"
+            "|---|---|---|\n"
+            "| Other Field | C | D |\n"
+            "| Third Field | E | F |"
+        )
+        schema = _schema(
+            ("vessel_name", "string", "Vessel", ["Ship Name"]),
+            ("port", "string", "Port", ["Port"]),
+            ("eta", "string", "ETA", ["ETA"]),
+            ("tons", "int", "Tonnes", ["Tonnes"]),
+        )
+        result = _try_deterministic_transposed(text, schema)
+        assert result is None
+
+    def test_non_transposed_flat_table_returns_none(self) -> None:
+        """Normal flat table (>5 data columns) should not match."""
+        text = (
+            "| Port | Vessel | ETA | Volume | Commodity | Status |\n"
+            "|---|---|---|---|---|---|\n"
+            "| Brisbane | STAR | 2025-09-01 | 30000 | Wheat | Completed |"
+        )
+        schema = _schema(
+            ("port", "string", "Port", ["Port"]),
+            ("vessel_name", "string", "Vessel", ["Vessel"]),
+        )
+        # 6 columns total → col_count > 5 → rejected
+        result = _try_deterministic_transposed(text, schema)
+        assert result is None
+
+    def test_inconsistent_column_count_returns_none(self) -> None:
+        """Mismatched pipe row widths → not transposed."""
+        text = (
+            "| A | B | C |\n"
+            "|---|---|---|\n"
+            "| X | Y |"  # only 2 cells
+        )
+        result = _try_deterministic_transposed(
+            text,
+            _schema(("a", "string", "A", ["A"]), ("b", "string", "B", ["B"])),
+        )
+        assert result is None
+
+
+class TestPreHeaderSectionLabel:
+    """Tests for section label detection before the first pipe-table header."""
+
+    def test_pre_header_section_captured(self) -> None:
+        text = (
+            "GERALDTON\n"
+            "| Port | Vessel |\n"
+            "|---|---|\n"
+            "| A | X |\n"
+            "| B | Y |\n"
+            "KWINANA\n"
+            "| Port | Vessel |\n"
+            "|---|---|\n"
+            "| C | Z |"
+        )
+        parsed = _parse_pipe_table_deterministic(text)
+        assert parsed is not None
+        assert len(parsed.sections) == 2
+        assert parsed.sections[0] == ("GERALDTON", 0, 1)
+        assert parsed.sections[1] == ("KWINANA", 2, 2)
+
+    def test_title_not_confused_with_section(self) -> None:
+        text = (
+            "## My Table\n"
+            "SECTION_A\n"
+            "| X |\n"
+            "|---|\n"
+            "| 1 |"
+        )
+        parsed = _parse_pipe_table_deterministic(text)
+        assert parsed is not None
+        assert parsed.title == "My Table"
+        assert len(parsed.sections) == 1
+        assert parsed.sections[0][0] == "SECTION_A"
+
+
+class TestReHeaderPopping:
+    """Tests for popping re-header rows when separator appears in data mode."""
+
+    def test_reheader_with_different_column_count(self) -> None:
+        """Re-header with different column count should be popped."""
+        text = (
+            "SECTION_A\n"
+            "| A | B | |\n"  # 3 cells (with empty)
+            "|---|---|---|\n"
+            "| 1 | 2 | |\n"
+            "SECTION_B\n"
+            "| A | B |\n"  # 2 cells — re-header with different count
+            "|---|---|\n"  # separator triggers pop
+            "| 3 | 4 |"
+        )
+        parsed = _parse_pipe_table_deterministic(text)
+        assert parsed is not None
+        # Row "| A | B |" should have been popped as re-header
+        assert len(parsed.data_rows) == 2
+        assert parsed.data_rows[0][:2] == ["1", "2"]
+        assert parsed.data_rows[1][:2] == ["3", "4"]
+
+    def test_no_false_pop_without_separator(self) -> None:
+        """Data rows without trailing separator aren't popped."""
+        text = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |"
+        parsed = _parse_pipe_table_deterministic(text)
+        assert parsed is not None
+        assert len(parsed.data_rows) == 2
+
+
+class TestEmptyColumnAlignment:
+    """Tests for aligning short rows when headers have empty columns."""
+
+    def test_short_row_aligned_with_empty_header(self) -> None:
+        text = (
+            "| A | B | | C |\n"
+            "|---|---|---|---|\n"
+            "| 1 | 2 | | 3 |\n"  # 4 cells, matches
+            "SECTION_B\n"
+            "| A | B | C |\n"   # re-header (3 cells)
+            "|---|---|---|\n"    # popped
+            "| 4 | 5 | 6 |"    # 3 cells — should be aligned to 4
+        )
+        parsed = _parse_pipe_table_deterministic(text)
+        assert parsed is not None
+        assert len(parsed.data_rows) == 2
+        # First row: already 4 cells
+        assert parsed.data_rows[0] == ["1", "2", "", "3"]
+        # Second row: aligned from 3 to 4 cells
+        assert parsed.data_rows[1] == ["4", "5", "", "6"]
+
+    def test_reheader_remaps_different_column_layout(self) -> None:
+        """Rows in sections with a re-header are remapped, not dropped."""
+        text = (
+            "| A | B | | C |\n"
+            "|---|---|---|---|\n"
+            "| 1 | 2 | | 3 |\n"      # 4 cells, matches global header
+            "SECTION_B\n"
+            "| A | | B | | C | D |\n"  # re-header (6 cells, different layout)
+            "|---|---|---|---|---|---|\n"
+            "| x | | y | | z | w |"    # 6 cells — remapped via re-header
+        )
+        parsed = _parse_pipe_table_deterministic(text)
+        assert parsed is not None
+        assert len(parsed.data_rows) == 2
+        # First row: unchanged (matches global header)
+        assert parsed.data_rows[0] == ["1", "2", "", "3"]
+        # Second row: remapped — A→col0, B→col1, C→col3 (D has no match, dropped)
+        assert parsed.data_rows[1] == ["x", "y", "", "z"]
+
+
+class TestTransposedStatusLabel:
+    """Tests for CSV-escaped status labels in transposed tables."""
+
+    def test_csv_escaped_status_matches_alias(self) -> None:
+        """Queensland-style CSV-escaped status label matches after normalization."""
+        text = (
+            '| Ship Name | STAR | MOON |\n'
+            '|---|---|---|\n'
+            '| Port | Brisbane | Brisbane |\n'
+            '|---|---|---|\n'
+            '| ETA | 2025-09-01 | 2025-09-15 |\n'
+            '|"Loading ""commenced"" or||Completed|\n'
+            '\n'
+            '""completed"""\n'
+        )
+        schema = _schema(
+            ("vessel_name", "string", "Vessel", ["Ship Name"]),
+            ("load_port", "string", "Port", ["Port"]),
+            ("eta", "string", "ETA", ["ETA"]),
+            ("status", "string", "Status", ['Loading "commenced" or "completed"']),
+        )
+        result = _try_deterministic_transposed(text, schema)
+        assert result is not None
+        assert len(result.records) == 2
+        r0 = result.records[0].model_dump()
+        r1 = result.records[1].model_dump()
+        assert r0.get("status") is None  # first vessel has empty status cell
+        assert r1.get("status") == "Completed"

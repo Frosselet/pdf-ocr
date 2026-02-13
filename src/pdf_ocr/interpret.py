@@ -984,6 +984,26 @@ def _split_pipe_row(line: str) -> list[str]:
     return [p.strip() for p in parts]
 
 
+def _normalize_for_alias_match(text: str) -> str:
+    """Normalize text for alias comparison.
+
+    Lowercase, collapse whitespace, strip double quotes, and normalize
+    paren spacing so that ``"Quantity(tonnes)"`` matches
+    ``"Quantity (tonnes)"``, and CSV-escaped labels like
+    ``'"Loading ""commenced"" or "completed""'`` match
+    ``"Loading commenced or completed"``.
+    """
+    s = text.strip().lower()
+    # Remove all double-quote characters (handles CSV-style escaping)
+    s = s.replace('"', "")
+    # Collapse internal whitespace runs
+    s = re.sub(r"\s+", " ", s)
+    # Normalize paren spacing: ensure space before '(' and after ')'
+    s = re.sub(r"\s*\(\s*", " (", s)
+    s = re.sub(r"\s*\)\s*", ") ", s)
+    return s.strip()
+
+
 _TITLE_RE = re.compile(r"^##\s+(.+)")
 _SECTION_LABEL_RE = re.compile(r"^\*\*(.+)\*\*$")
 _SEPARATOR_RE = re.compile(r"^\|[-| :]+\|$")
@@ -1006,6 +1026,9 @@ def _parse_pipe_table_deterministic(compressed_text: str) -> _DeterministicParse
     found_separator = False
     current_section: str | None = None
     section_start: int | None = None
+    pre_header_label: str | None = None  # plain text before first pipe row
+    last_was_data_row = False  # tracks if the most recent pipe row was added as data
+    section_reheaders: dict[str, list[str]] = {}  # section_label → popped re-header cells
 
     for line in lines:
         s = line.strip()
@@ -1019,6 +1042,13 @@ def _parse_pipe_table_deterministic(compressed_text: str) -> _DeterministicParse
                 title = m.group(1).strip()
                 continue
 
+        # Track plain text before the first header as a potential section label
+        if not found_header and not s.startswith("|") and "\t" not in s:
+            # Keep only the last non-title text before the header
+            if not _TITLE_RE.match(s):
+                pre_header_label = s
+            continue
+
         # Header row: first pipe row before separator
         if not found_header and s.startswith("|") and not _SEPARATOR_RE.match(s):
             headers = _split_pipe_row(s)
@@ -1028,6 +1058,11 @@ def _parse_pipe_table_deterministic(compressed_text: str) -> _DeterministicParse
         # Separator: |---|---|...|
         if found_header and not found_separator and _SEPARATOR_RE.match(s):
             found_separator = True
+            # If there was a plain text label before the first header,
+            # treat it as the first section label (e.g., port name)
+            if pre_header_label:
+                current_section = pre_header_label
+                section_start = 0
             continue
 
         if not found_separator:
@@ -1043,25 +1078,37 @@ def _parse_pipe_table_deterministic(compressed_text: str) -> _DeterministicParse
                 sections.append((current_section, section_start, len(data_rows) - 1))
             current_section = m.group(1).strip()
             section_start = len(data_rows)
+            last_was_data_row = False
             continue
 
-        # Skip repeated separator/header rows between sections
+        # Repeated separator in data mode: the previous data row was a
+        # re-header (column count may differ across sections). Pop it,
+        # but only if a data row was added since the last separator/section.
         if _SEPARATOR_RE.match(s):
+            if last_was_data_row:
+                popped = data_rows.pop()
+                # Save re-header for per-section column remapping
+                if current_section is not None and len(popped) != len(headers):
+                    section_reheaders[current_section] = popped
+            last_was_data_row = False
             continue
         if s.startswith("|") and not s.startswith("||"):
             # Check if this looks like a re-header (same content as headers)
             candidate = _split_pipe_row(s)
             if candidate == headers:
+                last_was_data_row = False
                 continue
 
         # Aggregation row: || prefix (first cell empty)
         if s.startswith("||"):
             aggregation_rows.append(_split_pipe_row(s))
+            last_was_data_row = False
             continue
 
         # Data row
         if s.startswith("|"):
             data_rows.append(_split_pipe_row(s))
+            last_was_data_row = True
             continue
 
         # Plain text section header (no bold markers) — used by some formats
@@ -1078,6 +1125,63 @@ def _parse_pipe_table_deterministic(compressed_text: str) -> _DeterministicParse
 
     if not found_separator or not headers:
         return None
+
+    # Post-process: align rows when column counts differ across sections.
+    n_hdr = len(headers)
+    empty_positions = [i for i, h in enumerate(headers) if not h.strip()]
+
+    # Phase A: remap rows in sections that have a saved re-header with
+    # different column count.  Match non-empty cell names between the
+    # re-header and the global header to build a column mapping.
+    if section_reheaders:
+        # Normalised global header → global index (first match)
+        global_index: dict[str, int] = {}
+        for gi, h in enumerate(headers):
+            key = h.strip().lower()
+            if key and key not in global_index:
+                global_index[key] = gi
+
+        section_ranges: dict[str, tuple[int, int]] = {
+            label: (start, end) for label, start, end in sections
+        }
+        for sec_label, reheader in section_reheaders.items():
+            if sec_label not in section_ranges:
+                continue
+            # Build mapping: re-header index → global header index
+            col_map: dict[int, int] = {}
+            for ri, cell in enumerate(reheader):
+                key = cell.strip().lower()
+                if key and key in global_index:
+                    col_map[ri] = global_index[key]
+
+            start, end = section_ranges[sec_label]
+            for di in range(start, min(end + 1, len(data_rows))):
+                row = data_rows[di]
+                new_row = [""] * n_hdr
+                for src_idx, dst_idx in col_map.items():
+                    if src_idx < len(row):
+                        new_row[dst_idx] = row[src_idx]
+                data_rows[di] = new_row
+
+    # Phase B: align remaining rows with simple empty-column insertion.
+    if empty_positions:
+        aligned_rows: list[list[str]] = []
+        for row in data_rows:
+            diff = n_hdr - len(row)
+            if diff == 0:
+                aligned_rows.append(row)
+            elif 0 < diff <= len(empty_positions):
+                # Short row: insert empty cells at empty-header positions
+                for offset, pos in enumerate(empty_positions[:diff]):
+                    row.insert(pos + offset, "")
+                aligned_rows.append(row)
+            else:
+                # Row too long or too short to align — drop it
+                log.debug(
+                    "Dropping unalignable row (%d cells vs %d headers): %s",
+                    len(row), n_hdr, row[:3],
+                )
+        data_rows = aligned_rows
 
     return _DeterministicParsed(
         title=title,
@@ -1118,14 +1222,14 @@ def _map_to_schema_deterministic(
     alias_to_cols: dict[str, list[ColumnDef]] = {}
     for col in schema.columns:
         for alias in col.aliases:
-            alias_to_cols.setdefault(alias.strip().lower(), []).append(col)
+            alias_to_cols.setdefault(_normalize_for_alias_match(alias), []).append(col)
 
     MEASURE_TYPES = {"int", "float"}
     DIMENSION_TYPES = {"string", "date"}
 
     def _resolve_alias(part: str) -> list[ColumnDef]:
         """Resolve a header part to matching schema column(s)."""
-        matches = alias_to_cols.get(part.lower(), [])
+        matches = alias_to_cols.get(_normalize_for_alias_match(part), [])
         if len(matches) <= 1:
             return matches
         # Type-based disambiguation: when the same alias matches a dimension
@@ -1427,6 +1531,138 @@ def _map_to_schema_deterministic(
     return mapped_table, []
 
 
+def _parse_transposed_pipe_sections(text: str) -> list[list[str]] | None:
+    """Collect all non-separator pipe rows across multiple pipe-table fragments.
+
+    Handles continuation lines: non-pipe text following a pipe row is
+    appended to the first cell (the label) of the preceding row.  Rows
+    with an empty first cell are skipped (not labels).
+
+    Returns a list of pipe rows (each row is a list of cell strings), or
+    ``None`` when no pipe rows are found or column counts are inconsistent.
+    """
+    rows: list[list[str]] = []
+    pending_continuation = False  # True when last row's first cell is an unterminated CSV quote
+    for line in text.split("\n"):
+        s = line.strip()
+        if not s:
+            # Blank lines break continuations unless we're inside an
+            # unterminated CSV-quoted string (pending_continuation=True).
+            continue
+        if s.startswith("|"):
+            if _SEPARATOR_RE.match(s):
+                pending_continuation = False
+                continue
+            cells = _split_pipe_row(s)
+            if cells and cells[0].strip():
+                rows.append(cells)
+                # Detect unterminated CSV quote: starts with " but no closing "
+                c0 = cells[0].strip()
+                pending_continuation = c0.startswith('"') and not c0.endswith('"')
+            else:
+                pending_continuation = False
+        else:
+            # Non-pipe continuation: append to first cell of preceding row
+            # only when it's an unterminated CSV string or immediately follows
+            if pending_continuation and rows and "\t" not in s:
+                rows[-1][0] = rows[-1][0] + " " + s
+                # Check if the quote is now closed
+                c0 = rows[-1][0].strip()
+                pending_continuation = c0.startswith('"') and not c0.endswith('"')
+            else:
+                pending_continuation = False
+    if not rows:
+        return None
+    # Check consistent column count
+    col_count = len(rows[0])
+    if col_count < 2:
+        return None
+    if not all(len(r) == col_count for r in rows):
+        return None
+    return rows
+
+
+def _try_deterministic_transposed(
+    page_text: str,
+    schema: CanonicalSchema,
+) -> baml_types.MappedTable | None:
+    """Attempt deterministic transposed-table interpretation.
+
+    Detects tables where field labels are in the first column and data
+    values are in subsequent columns (one column per record).  Matches
+    first-column labels against schema aliases.  Returns a ``MappedTable``
+    with one record per data column, or ``None`` if not a transposed table.
+    """
+    rows = _parse_transposed_pipe_sections(page_text)
+    if rows is None:
+        return None
+    col_count = len(rows[0])
+    # Transposed tables have 1 label column + 1–4 data columns
+    if col_count < 2 or col_count > 5:
+        return None
+
+    # Build alias lookup: normalized alias → (ColumnDef, original alias text)
+    alias_lookup: dict[str, ColumnDef] = {}
+    for col in schema.columns:
+        for alias in col.aliases:
+            alias_lookup[_normalize_for_alias_match(alias)] = col
+
+    # Match first-column labels against schema aliases
+    label_matches: list[tuple[int, ColumnDef]] = []  # (row_idx, schema_col)
+    for ri, row in enumerate(rows):
+        label = row[0]
+        norm = _normalize_for_alias_match(label)
+        if norm in alias_lookup:
+            label_matches.append((ri, alias_lookup[norm]))
+
+    # Need ≥50% of schema columns matched
+    matched_schema_cols = {col.name for _, col in label_matches}
+    if len(matched_schema_cols) < len(schema.columns) * 0.5:
+        return None
+
+    # Build one record per data column (columns 1..N)
+    records: list[baml_types.MappedRecord] = []
+    for ci in range(1, col_count):
+        rec: dict[str, str] = {}
+        for ri, schema_col in label_matches:
+            val = rows[ri][ci].strip()
+            if val:
+                rec[schema_col.name] = val
+        records.append(baml_types.MappedRecord(**rec))
+
+    field_mappings = [
+        baml_types.FieldMapping(
+            column_name=col.name,
+            source="transposed row label",
+            rationale="Matched via schema aliases (transposed layout)",
+            confidence=baml_types.Confidence.High,
+        )
+        for col in schema.columns
+        if col.name in matched_schema_cols
+    ]
+
+    metadata = baml_types.InterpretationMetadata(
+        model="deterministic",
+        table_type_inference=baml_types.TableTypeInference(
+            table_type=baml_types.TableType.TransposedTable,
+            mapping_strategy_used="transposed deterministic",
+        ),
+        field_mappings=field_mappings,
+    )
+
+    log.info(
+        "Transposed deterministic: %d records, %d/%d schema cols matched",
+        len(records), len(matched_schema_cols), len(schema.columns),
+    )
+
+    return baml_types.MappedTable(
+        records=records,
+        unmapped_columns=[],
+        mapping_notes="Deterministic transposed mapping — labels matched via schema aliases",
+        metadata=metadata,
+    )
+
+
 def _try_deterministic(
     page_text: str,
     schema: CanonicalSchema,
@@ -1492,7 +1728,9 @@ async def _interpret_pages_batched_async(
 
     if page_images is None:
         for pi, page in enumerate(pages):
-            det = _try_deterministic(page, schema)
+            det = _try_deterministic_transposed(page, schema)
+            if det is None:
+                det = _try_deterministic(page, schema)
             if det is not None:
                 deterministic_results[pi + 1] = det  # 1-indexed
                 log.info("Page %d: deterministic mapping (%d records)", pi + 1, len(det.records))

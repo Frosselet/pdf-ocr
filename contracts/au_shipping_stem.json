@@ -24,14 +24,14 @@
             "name": "load_port",
             "type": "string",
             "description": "Loading port name — may appear as section header rather than a column",
-            "aliases": ["Port", "PORT", "Loading Port"],
+            "aliases": ["Port", "PORT", "Loading Port", "GERALDTON", "KWINANA", "ALBANY", "ESPERANCE"],
             "format": "uppercase"
           },
           {
             "name": "vessel_name",
             "type": "string",
             "description": "Name of the vessel",
-            "aliases": ["Ship Name", "NAME OF SHIP", "Vessel Name", "Vessel"],
+            "aliases": ["Ship Name", "NAME OF SHIP", "Vessel Name", "Vessel", "Name of ship"],
             "format": "uppercase"
           },
           {
@@ -63,14 +63,14 @@
             "name": "eta",
             "type": "string",
             "description": "Estimated time of arrival at port",
-            "aliases": ["ETA", "Date ETA of Ship To", "DATE ETA OF SHIP TO"],
+            "aliases": ["ETA", "Date ETA of Ship To", "DATE ETA OF SHIP TO", "Date of ETA of Ship From"],
             "format": "YYYY-MM-DD"
           },
           {
             "name": "status",
             "type": "string",
             "description": "Current loading status",
-            "aliases": ["Status", "Load Status", "Loading Status", "LOADING COMMENCED OR COMPLETED"]
+            "aliases": ["Status", "Load Status", "Loading Status", "LOADING COMMENCED OR COMPLETED", "Loading commenced or completed", "Loading \"commenced\" or \"completed\""]
           }
         ]
       }
