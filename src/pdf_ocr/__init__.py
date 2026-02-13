@@ -33,6 +33,14 @@ from pdf_ocr.retrieval import (
     search_and_extract,
     validate_metadata,
 )
+from pdf_ocr.contracts import (
+    ContractContext,
+    OutputSpec,
+    load_contract,
+    resolve_year_templates,
+    enrich_dataframe,
+    format_dataframe,
+)
 from pdf_ocr.report_date import ReportDateConfig, resolve_report_date
 from pdf_ocr.interpret import (
     CanonicalSchema,
@@ -151,6 +159,13 @@ def extract_tables_from_powerpoint(*args, **kwargs):
 
 
 __all__ = [
+    # Contract helpers
+    "ContractContext",
+    "OutputSpec",
+    "load_contract",
+    "resolve_year_templates",
+    "enrich_dataframe",
+    "format_dataframe",
     # Core types
     "CanonicalSchema",
     "CellType",
