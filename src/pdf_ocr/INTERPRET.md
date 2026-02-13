@@ -127,9 +127,37 @@ For PDFs with garbled/concatenated headers. Vision reads correct headers from pa
 
 ---
 
-### H3: Step-2 Batching (`_create_batches`)
+### H3: Step-1 Pre-Splitting (`_split_pipe_table`)
 
-**Problem**: Dense pages with 78+ data rows cause LLM output truncation.
+**Problem**: Large tables (65+ data rows) cause LLM output truncation in Step 1 (`AnalyzeAndParseTable`). Step 1 processes the entire table in a single call, and with many rows the model runs out of output tokens and drops/garbles tail rows.
+
+**Solution**: Pre-split large tables into chunks of `step1_max_rows` (default 40) rows *before* Step 1:
+
+1. **Parse pipe-table structure**: Identify preamble (title, headers, separator), data rows, section labels, aggregation rows
+2. **Split at section boundaries** when possible (natural break points)
+3. **Split within sections** at `step1_max_rows` boundaries when sections are too large
+4. **Exclude aggregation rows** from all chunks (Step 1 ignores them anyway)
+5. **Preserve preamble** in every chunk so the LLM can understand the table structure
+6. **Run Step 1 concurrently** on all chunks via `asyncio.gather()`
+7. **Merge results** back into a single `ParsedTable` — concatenate `data_rows`, rebuild section boundaries with global row indices
+
+```python
+# Before: single call truncates at row ~55
+parsed = analyze_and_parse(big_table)  # 67 rows → garbled tail
+
+# After: two manageable calls, merged seamlessly
+chunks = _split_pipe_table(big_table, 40)  # → [chunk_40_rows, chunk_27_rows]
+parsed_chunks = await gather(*(analyze_and_parse(c) for c in chunks))
+parsed = _merge_parsed_chunks(parsed_chunks)  # → 67 rows, all correct
+```
+
+**Default**: `step1_max_rows=40` — well below the ~65-row truncation threshold, higher than Step-2's `batch_size=20` since Step 1 output per row is smaller.
+
+---
+
+### H4: Step-2 Batching (`_create_batches`)
+
+**Problem**: Dense pages with 78+ data rows cause LLM output truncation in Step 2.
 
 **Solution**: Split into batches of `batch_size` (default 20) rows:
 
@@ -147,7 +175,7 @@ For PDFs with garbled/concatenated headers. Vision reads correct headers from pa
 
 ---
 
-### H4: Context Inference
+### H5: Context Inference
 
 **Problem**: Not all schema fields are table columns. Some values live in:
 - Section headers ("GERALDTON", "KWINANA")
@@ -166,7 +194,7 @@ ColumnDef("port", "string",
 
 ---
 
-### H5: Vision Cross-Validation
+### H6: Vision Cross-Validation
 
 **Problem**: Vision-guided parsing might regress quality if vision infers wrong column count.
 
@@ -182,7 +210,7 @@ if vision_column_count != len(parsed_row.cells):
 
 ---
 
-### H6: Multi-Page Concurrency
+### H7: Multi-Page Concurrency
 
 **Problem**: Multi-page PDFs should be processed in parallel.
 
@@ -200,7 +228,7 @@ results = await asyncio.gather(*[process_page(p) for p in pages])
 
 ---
 
-### H7: Fallback Model Support
+### H8: Fallback Model Support
 
 **Problem**: Primary model might fail (rate limit, network, unavailable).
 
@@ -281,6 +309,120 @@ result = asyncio.run(interpret_tables_async(pages, schema))
 - **Don't put filtering logic in descriptions**: "only latest release" → filter downstream
 - **Don't put aggregation logic**: "sum of regions" → post-process
 - **Don't rely on LLM to deduplicate**: extract all, dedupe downstream
+
+---
+
+## Aliases: The Contract Between Schema and LLM
+
+Aliases are **the primary mechanism** the LLM uses to match source columns to canonical
+columns during Step 2 (MapToCanonicalSchema). Getting them right is critical — missing or
+incomplete aliases are the #1 cause of mapping failures, NA values, and dropped data.
+
+### How Alias Matching Works
+
+The LLM receives your `CanonicalSchema` (column names, types, descriptions, **aliases**)
+alongside the parsed table. For each source column, it checks:
+
+1. Does the column name match any canonical column's **alias** (literal match)?
+2. If no alias match, does the **description** suggest a match (semantic inference)?
+3. If no match at all, omit the field (→ NULL/NA in output).
+
+**Literal alias matching is far more reliable than description-based inference.**
+Descriptions require the LLM to reason about intent; aliases are unambiguous signals.
+
+### Critical Rule: Compound Headers and Unpivoting
+
+When source tables have compound headers with ` / ` separators (e.g.,
+`"Category A / Metric 1 / 2025"`), Step 2 splits each header on ` / ` and checks
+whether the parts match aliases of different canonical columns. If they do, it
+**unpivots**: each data row produces multiple output records.
+
+**The rule (from the BAML prompt):**
+
+> Only unpivot columns where **ALL** header parts match dimension aliases.
+> If a column's header part does NOT match any alias, SKIP that column entirely.
+
+This means: **every level of a compound header hierarchy must have a canonical column
+with matching aliases.** A missing alias at any level causes the entire column to be
+silently dropped.
+
+### Example: What Goes Wrong Without Aliases
+
+Source table (two crop groups side by side):
+
+```
+| Region    | spring crops / MOA Target 2025 | spring crops / 2025 | spring grain / MOA Target 2025 | spring grain / 2025 |
+|-----------|--------------------------------|---------------------|--------------------------------|---------------------|
+| North     | 1000                           | 950                 | 500                            | 480                 |
+```
+
+Schema with **incomplete** aliases:
+
+```python
+CanonicalSchema(columns=[
+    ColumnDef("Region", "string", "Geographic region", aliases=["Region"]),
+    ColumnDef("Area", "float", "Target area", aliases=["MOA Target"]),
+    ColumnDef("Value", "float", "Actual sown area", aliases=["2025"]),
+    ColumnDef("Crop", "string", "Crop name", aliases=[]),      # ← EMPTY!
+    ColumnDef("Year", "int", "Reporting year", aliases=["2025"]),
+])
+```
+
+**Result**: The LLM splits `"spring crops / MOA Target 2025"` into parts:
+- `"spring crops"` → no alias match (Crop has `aliases=[]`) → **FAIL**
+- `"MOA Target"` → matches Area ✓
+- `"2025"` → matches Value/Year ✓
+
+Since "ALL parts" must match, the column should be skipped entirely. In practice,
+the LLM may partially comply — handling the first group (left side) through lenient
+inference but dropping the second group (right side). This produces correct data for
+"spring crops" but NA values for "spring grain".
+
+### Fixed schema:
+
+```python
+CanonicalSchema(columns=[
+    ColumnDef("Region", "string", "Geographic region", aliases=["Region"]),
+    ColumnDef("Area", "float", "Target area", aliases=["MOA Target"]),
+    ColumnDef("Value", "float", "Actual sown area", aliases=["2025"]),
+    ColumnDef("Crop", "string", "Crop name",
+              aliases=["spring crops", "spring grain"]),  # ← explicit group aliases
+    ColumnDef("Year", "int", "Reporting year", aliases=["2025"]),
+])
+```
+
+Now ALL parts of every compound header match an alias → consistent unpivoting for
+both groups.
+
+### Alias Checklist
+
+When designing a canonical schema, verify:
+
+| Check | Question | If No |
+|-------|----------|-------|
+| **Column name variations** | Does every source column name (or partial name) appear as an alias somewhere? | Add aliases for all known variations |
+| **Compound header parts** | For ` / `-separated headers, does every segment match an alias on some canonical column? | Add the missing group/dimension aliases |
+| **Pivot dimensions** | For year/period columns that get unpivoted, does both the value column AND the dimension column list the pivot values as aliases? | Use `{YYYY}` templates or static year aliases on both |
+| **Group labels** | For side-by-side table groups (e.g., two crops in one table), are group labels listed as aliases on the grouping column? | Add all group labels as aliases |
+
+### Year Template Aliases
+
+For dynamic pivot values (years that change per document), use `{YYYY}` templates
+in the contract instead of hardcoded values:
+
+```json
+{
+  "name": "Year",
+  "aliases": ["{YYYY}", "{YYYY-1}"]
+}
+```
+
+The pipeline resolves these at runtime from document headers:
+- `{YYYY}` → latest year found (e.g., "2025")
+- `{YYYY-1}` → one year before (e.g., "2024")
+- `{YYYY+1}` → one year after (e.g., "2026")
+
+This keeps the contract future-proof without hardcoding specific years.
 
 ---
 

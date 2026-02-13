@@ -314,6 +314,7 @@ Each heuristic encodes a human inference pattern. The table shows: what humans d
 |---|---|---|
 | "This is a pivot table" | Table type classification | Structural pattern matching |
 | "The LLM miscounted section rows" | Section boundary validation | Deterministic pipe-row counting |
+| "Step 1 will truncate this big table" | Step-1 pre-splitting | Pre-split into `step1_max_rows` chunks |
 | "Too many rows for one LLM call" | Step-2 batching | Section-aware chunking |
 | "Port name is in the section header" | Context inference | Schema column without aliases |
 | "Vision made it worse, not better" | Vision cross-validation | Column count verification |

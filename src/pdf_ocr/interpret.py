@@ -745,6 +745,197 @@ def _group_by_page(
     }
 
 
+# ─── Pre-Step-1 table splitting ────────────────────────────────────────────────
+
+
+def _count_pipe_data_rows(compressed_text: str) -> int:
+    """Count pipe-table data rows (excluding aggregation rows).
+
+    Walks through *compressed_text* looking for ``|---|`` separators that mark
+    the start of data rows, then counts subsequent pipe rows whose first cell
+    is non-empty (i.e. not aggregation ``||`` rows).
+    """
+    total = 0
+    in_data = False
+    for line in compressed_text.split("\n"):
+        s = line.strip()
+        if s.startswith("|---"):
+            in_data = True
+            continue
+        if in_data:
+            if s.startswith("|") and s:
+                if not s.startswith("||"):
+                    total += 1
+            else:
+                in_data = False
+    return total
+
+
+def _split_pipe_table(compressed_text: str, max_rows: int) -> list[str]:
+    """Split a compressed pipe-table into chunks when data rows exceed *max_rows*.
+
+    Each chunk retains the preamble (title lines, header pipe rows, separator)
+    so Step 1 can understand the table structure.  Aggregation rows (``||``)
+    are excluded from all chunks since Step 1 is instructed to ignore them.
+
+    Returns ``[compressed_text]`` unchanged when the table has <= *max_rows*
+    data rows.
+    """
+    lines = compressed_text.split("\n")
+
+    # --- Parse into structural segments ---
+    preamble_lines: list[str] = []
+    body_items: list[tuple[str, str]] = []  # ("data_row"|"section_label"|"agg_row", line)
+    in_data = False
+    preamble_done = False
+    current_section: str | None = None
+
+    for line in lines:
+        s = line.strip()
+
+        if not preamble_done:
+            preamble_lines.append(line)
+            if s.startswith("|---"):
+                preamble_done = True
+                in_data = True
+            continue
+
+        if in_data:
+            if s.startswith("|") and s:
+                if s.startswith("||"):
+                    body_items.append(("agg_row", line))
+                else:
+                    body_items.append(("data_row", line))
+            else:
+                in_data = False
+                if s and not s.startswith("|") and "\t" not in s:
+                    current_section = s
+                    body_items.append(("section_label", line))
+        else:
+            if s.startswith("|---"):
+                in_data = True
+                # Don't re-add the separator — preamble already has it
+                continue
+            if s.startswith("|") and s:
+                # Sub-header pipe rows between sections — skip for data purposes
+                continue
+            if s and not s.startswith("|") and "\t" not in s:
+                current_section = s
+                body_items.append(("section_label", line))
+
+    # Count total data rows
+    data_count = sum(1 for kind, _ in body_items if kind == "data_row")
+    if data_count <= max_rows:
+        return [compressed_text]
+
+    # --- Group body items into chunks ---
+    preamble = "\n".join(preamble_lines)
+    chunks: list[str] = []
+    current_chunk_lines: list[str] = []
+    current_chunk_data_count = 0
+
+    def _flush_chunk() -> None:
+        nonlocal current_chunk_lines, current_chunk_data_count
+        if current_chunk_lines:
+            chunks.append(preamble + "\n" + "\n".join(current_chunk_lines))
+            current_chunk_lines = []
+            current_chunk_data_count = 0
+
+    pending_section_label: str | None = None
+
+    for kind, line in body_items:
+        if kind == "agg_row":
+            # Exclude aggregation rows from all chunks
+            continue
+        if kind == "section_label":
+            # If we have data and adding this section would eventually exceed,
+            # try to break at this natural boundary
+            if current_chunk_data_count >= max_rows:
+                _flush_chunk()
+            pending_section_label = line
+            continue
+        # kind == "data_row"
+        if current_chunk_data_count >= max_rows:
+            _flush_chunk()
+
+        # Add pending section label if any
+        if pending_section_label is not None:
+            current_chunk_lines.append(pending_section_label)
+            pending_section_label = None
+
+        current_chunk_lines.append(line)
+        current_chunk_data_count += 1
+
+    _flush_chunk()
+
+    log.info(
+        "Pre-split: %d data rows → %d chunks (max_rows=%d)",
+        data_count,
+        len(chunks),
+        max_rows,
+    )
+    return chunks
+
+
+def _merge_parsed_chunks(chunks: list[baml_types.ParsedTable]) -> baml_types.ParsedTable:
+    """Merge Step 1 results from multiple chunks into a single ``ParsedTable``.
+
+    - ``table_type``: from first chunk
+    - ``headers``: from first chunk
+    - ``aggregations``: from last chunk that has any, or first chunk
+    - ``data_rows``: concatenated from all chunks in order
+    - ``notes``: section boundaries rebuilt with correct global row indices
+    """
+    all_data_rows: list[list[str]] = []
+    # Collect per-chunk section info for rebuilding global boundaries
+    chunk_sections: list[list[tuple[str, int, int]]] = []
+
+    for chunk in chunks:
+        chunk_sections.append(
+            _parse_section_boundaries(chunk.notes) or []
+        )
+        all_data_rows.extend(chunk.data_rows)
+
+    # Find aggregations: use last chunk that has non-empty aggregations
+    aggregations = chunks[0].aggregations
+    for chunk in reversed(chunks):
+        if chunk.aggregations:
+            aggregations = chunk.aggregations
+            break
+
+    # Rebuild section boundaries with global row indices
+    merged_notes: str | None = None
+    offset = 0
+    global_sections: list[tuple[str, int, int]] = []
+    for ci, chunk in enumerate(chunks):
+        chunk_rows = len(chunk.data_rows)
+        for label, local_start, local_end in chunk_sections[ci]:
+            global_sections.append((label, offset + local_start, offset + local_end))
+        offset += chunk_rows
+
+    if global_sections:
+        parts = [f"{label} (rows {s}-{e})" for label, s, e in global_sections]
+        merged_notes = "Sections: " + ", ".join(parts)
+
+    # Preserve non-section notes from first chunk
+    if chunks[0].notes and merged_notes:
+        non_section = _SECTION_RE.sub("", chunks[0].notes)
+        non_section = re.sub(r"Sections?\s*:\s*", "", non_section)
+        non_section = re.sub(r"^[\s,;]+|[\s,;]+$", "", non_section)
+        if non_section:
+            merged_notes = f"{merged_notes}; {non_section}"
+    elif chunks[0].notes and not merged_notes:
+        merged_notes = chunks[0].notes
+
+    return baml_types.ParsedTable(
+        table_type=chunks[0].table_type,
+        headers=chunks[0].headers,
+        aggregations=aggregations,
+        data_rows=all_data_rows,
+        notes=merged_notes,
+    )
+
+
 # ─── Batched async orchestrator ────────────────────────────────────────────────
 
 
@@ -753,6 +944,7 @@ async def _interpret_pages_batched_async(
     schema: CanonicalSchema,
     *,
     batch_size: int = 20,
+    step1_max_rows: int = 40,
     model: str = DEFAULT_MODEL,
     fallback_model: str | None = None,
     page_images: list[str] | None = None,
@@ -766,6 +958,10 @@ async def _interpret_pages_batched_async(
     When *page_images* is provided, a vision-based schema inference step
     (step 0) runs first, and step 1 uses the guided variant that splits
     concatenated values based on the inferred column structure.
+
+    Large tables (more than *step1_max_rows* data rows) are pre-split into
+    chunks before Step 1 to prevent LLM output truncation, then merged back
+    after Step 1 completes.
     """
     effective_vision_model = vision_model or model
 
@@ -786,23 +982,50 @@ async def _interpret_pages_batched_async(
                 pi + 1, vs.column_count, vs.column_names,
             )
 
-    # Step 1: parse all pages concurrently
+    # Pre-split large pages to prevent Step 1 output truncation
+    expanded_pages: list[str] = []
+    page_chunk_counts: list[int] = []  # how many chunks per original page
+
+    for page in pages:
+        chunks = _split_pipe_table(page, step1_max_rows)
+        expanded_pages.extend(chunks)
+        page_chunk_counts.append(len(chunks))
+
+    # Expand vision schemas to match expanded_pages (repeat per chunk)
+    expanded_visual_schemas: list[baml_types.InferredTableSchema] | None = None
     if visual_schemas is not None:
+        expanded_visual_schemas = []
+        for vs, count in zip(visual_schemas, page_chunk_counts):
+            expanded_visual_schemas.extend([vs] * count)
+
+    # Step 1: parse all (expanded) pages concurrently
+    if expanded_visual_schemas is not None:
         parsed_tables = list(await asyncio.gather(
             *(
                 analyze_and_parse_guided_async(
                     page, vs, model=model, fallback_model=fallback_model
                 )
-                for page, vs in zip(pages, visual_schemas)
+                for page, vs in zip(expanded_pages, expanded_visual_schemas)
             )
         ))
     else:
         parsed_tables = list(await asyncio.gather(
             *(
                 analyze_and_parse_async(page, model=model, fallback_model=fallback_model)
-                for page in pages
+                for page in expanded_pages
             )
         ))
+
+    # Merge Step 1 chunks back into original pages
+    merged_parsed: list[baml_types.ParsedTable] = []
+    idx = 0
+    for count in page_chunk_counts:
+        if count == 1:
+            merged_parsed.append(parsed_tables[idx])
+        else:
+            merged_parsed.append(_merge_parsed_chunks(parsed_tables[idx : idx + count]))
+        idx += count
+    parsed_tables = merged_parsed
 
     for pi, pt in enumerate(parsed_tables):
         log.info(
@@ -1008,6 +1231,7 @@ def interpret_table(
     fallback_model: str | None = None,
     page_separator: str = "\f",
     batch_size: int = 20,
+    step1_max_rows: int = 40,
     pdf_path: str | bytes | Path | None = None,
     vision_model: str | None = None,
 ) -> dict[int, baml_types.MappedTable]:
@@ -1019,6 +1243,10 @@ def interpret_table(
     Returns a dict keyed by 1-indexed page number, where each value is a
     ``MappedTable`` containing that page's records, unmapped columns, mapping
     notes, and metadata.  Records contain only canonical schema fields.
+
+    Step 1 (structure parsing) is pre-split: tables with more than
+    *step1_max_rows* data rows are split into chunks before the LLM call,
+    then merged after.  This prevents output truncation on large tables.
 
     Step 2 (schema mapping) is batched: each page's parsed rows are split into
     chunks of *batch_size* rows so the LLM can produce complete output without
@@ -1037,6 +1265,8 @@ def interpret_table(
         fallback_model: If set, retry each step with this model on failure.
         page_separator: Delimiter between pages (default ``"\\f"``).
         batch_size: Maximum data rows per step-2 LLM call (default 20).
+        step1_max_rows: Maximum data rows per step-1 LLM call (default 40).
+            Tables exceeding this are pre-split into chunks.
         pdf_path: Path to original PDF (str, Path, or bytes). When provided,
             enables vision-based schema inference (step 0) and guided parsing
             (step 1).
@@ -1051,8 +1281,19 @@ def interpret_table(
         page_images = _render_page_images(pdf_path, pages=list(range(len(pages))))
 
     if len(pages) == 1 and page_images is None:
-        # Fast path: single page, no vision — try fully sync
-        parsed = analyze_and_parse(pages[0], model=model, fallback_model=fallback_model)
+        # Fast path: single page, no vision
+        # Pre-split if table is large to prevent Step 1 truncation
+        chunks = _split_pipe_table(pages[0], step1_max_rows)
+        if len(chunks) == 1:
+            # No split needed — try fully sync
+            parsed = analyze_and_parse(pages[0], model=model, fallback_model=fallback_model)
+        else:
+            # Split needed — run Step 1 on chunks concurrently, then merge
+            parsed_chunks = _run_async(asyncio.gather(
+                *(analyze_and_parse_async(c, model=model, fallback_model=fallback_model) for c in chunks)
+            ))
+            parsed = _merge_parsed_chunks(list(parsed_chunks))
+
         # Validate section boundaries against compressed text
         corrected = _validate_section_boundaries(
             parsed.notes, len(parsed.data_rows), pages[0]
@@ -1077,14 +1318,16 @@ def interpret_table(
         # Single page but multiple batches — need async for concurrency
         return _run_async(
             _interpret_pages_batched_async(
-                pages, schema, batch_size=batch_size, model=model, fallback_model=fallback_model
+                pages, schema, batch_size=batch_size, step1_max_rows=step1_max_rows,
+                model=model, fallback_model=fallback_model,
             )
         )
 
     # Multiple pages or vision enabled → batched concurrent processing
     return _run_async(
         _interpret_pages_batched_async(
-            pages, schema, batch_size=batch_size, model=model, fallback_model=fallback_model,
+            pages, schema, batch_size=batch_size, step1_max_rows=step1_max_rows,
+            model=model, fallback_model=fallback_model,
             page_images=page_images, vision_model=vision_model,
         )
     )
@@ -1096,6 +1339,7 @@ def interpret_tables(
     *,
     model: str = DEFAULT_MODEL,
     fallback_model: str | None = None,
+    step1_max_rows: int = 40,
 ) -> list[baml_types.MappedTable]:
     """Interpret multiple independent tables concurrently.
 
@@ -1112,6 +1356,7 @@ def interpret_tables(
         schema: Canonical schema to map all tables to.
         model: LLM to use for all calls.
         fallback_model: If set, retry each step with this model on failure.
+        step1_max_rows: Maximum data rows per step-1 LLM call (default 40).
 
     Returns:
         List of ``MappedTable`` results, one per input text, in the same
@@ -1120,6 +1365,7 @@ def interpret_tables(
     return _run_async(
         interpret_tables_async(
             compressed_texts, schema, model=model, fallback_model=fallback_model,
+            step1_max_rows=step1_max_rows,
         )
     )
 
@@ -1189,10 +1435,11 @@ async def _interpret_pages_async(
     *,
     model: str = DEFAULT_MODEL,
     fallback_model: str | None = None,
+    step1_max_rows: int = 40,
 ) -> list[baml_types.MappedTable]:
     """Concurrently run the 2-step pipeline on multiple pages.
 
-    Step 1: parse all pages in parallel.
+    Step 1: parse all pages in parallel (with pre-splitting for large tables).
     Step 2: map all parsed tables in parallel (one call per page — no batching).
 
     .. note::
@@ -1203,11 +1450,30 @@ async def _interpret_pages_async(
        :func:`interpret_tables_async` continues to use this function for
        callers who want explicit control.
     """
-    parsed_tables = await asyncio.gather(
-        *(analyze_and_parse_async(page, model=model, fallback_model=fallback_model) for page in pages)
-    )
+    # Pre-split large pages to prevent Step 1 output truncation
+    expanded_pages: list[str] = []
+    page_chunk_counts: list[int] = []
+    for page in pages:
+        chunks = _split_pipe_table(page, step1_max_rows)
+        expanded_pages.extend(chunks)
+        page_chunk_counts.append(len(chunks))
+
+    parsed_tables = list(await asyncio.gather(
+        *(analyze_and_parse_async(page, model=model, fallback_model=fallback_model) for page in expanded_pages)
+    ))
+
+    # Merge Step 1 chunks back into original pages
+    merged_parsed: list[baml_types.ParsedTable] = []
+    idx = 0
+    for count in page_chunk_counts:
+        if count == 1:
+            merged_parsed.append(parsed_tables[idx])
+        else:
+            merged_parsed.append(_merge_parsed_chunks(parsed_tables[idx : idx + count]))
+        idx += count
+
     mapped_tables = await asyncio.gather(
-        *(map_to_schema_async(parsed, schema, model=model, fallback_model=fallback_model) for parsed in parsed_tables)
+        *(map_to_schema_async(parsed, schema, model=model, fallback_model=fallback_model) for parsed in merged_parsed)
     )
     return list(mapped_tables)
 
@@ -1353,6 +1619,7 @@ async def interpret_tables_async(
     *,
     model: str = DEFAULT_MODEL,
     fallback_model: str | None = None,
+    step1_max_rows: int = 40,
 ) -> list[baml_types.MappedTable]:
     """Async: interpret multiple pre-split tables in parallel.
 
@@ -1362,24 +1629,46 @@ async def interpret_tables_async(
     you want explicit control over which text chunks to parallelize.
 
     Uses ``asyncio.gather()`` to run all parse calls concurrently,
-    then all map calls concurrently.
+    then all map calls concurrently.  Large tables (more than
+    *step1_max_rows* data rows) are pre-split into chunks before Step 1
+    to prevent LLM output truncation.
 
     Args:
         compressed_texts: List of compressed text strings, one per table/page.
         schema: Canonical schema to map to.
         model: LLM to use for all calls.
         fallback_model: If set, retry each step with this model on failure.
+        step1_max_rows: Maximum data rows per step-1 LLM call (default 40).
     """
-    # Step 1: parse all tables in parallel
-    parsed_tables = await asyncio.gather(
-        *(analyze_and_parse_async(text, model=model, fallback_model=fallback_model) for text in compressed_texts)
-    )
+    # Pre-split large tables to prevent Step 1 output truncation
+    expanded_texts: list[str] = []
+    table_chunk_counts: list[int] = []
+    for text in compressed_texts:
+        chunks = _split_pipe_table(text, step1_max_rows)
+        expanded_texts.extend(chunks)
+        table_chunk_counts.append(len(chunks))
+
+    # Step 1: parse all (expanded) tables in parallel
+    parsed_tables = list(await asyncio.gather(
+        *(analyze_and_parse_async(text, model=model, fallback_model=fallback_model) for text in expanded_texts)
+    ))
+
+    # Merge Step 1 chunks back into original tables
+    merged_parsed: list[baml_types.ParsedTable] = []
+    idx = 0
+    for count in table_chunk_counts:
+        if count == 1:
+            merged_parsed.append(parsed_tables[idx])
+        else:
+            merged_parsed.append(_merge_parsed_chunks(parsed_tables[idx : idx + count]))
+        idx += count
+
     # Step 2: map all parsed tables in parallel
     mapped_tables = await asyncio.gather(
-        *(map_to_schema_async(parsed, schema, model=model, fallback_model=fallback_model) for parsed in parsed_tables)
+        *(map_to_schema_async(parsed, schema, model=model, fallback_model=fallback_model) for parsed in merged_parsed)
     )
     # Fix table_type: use authoritative value from step 1
-    for parsed, mapped in zip(parsed_tables, mapped_tables):
+    for parsed, mapped in zip(merged_parsed, mapped_tables):
         if mapped.metadata.table_type_inference.table_type != parsed.table_type:
             mapped.metadata.table_type_inference.table_type = parsed.table_type
     return list(mapped_tables)

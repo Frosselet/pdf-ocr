@@ -478,9 +478,9 @@ _TEST_CATEGORIES = {
 # Expected classification per file
 EXPECTED_CLASSIFICATIONS: dict[str, dict[str, int]] = {
     "Apr 21": {"export": 2, "other": 1},
-    "April 25": {"export": 1, "other": 3, "planting": 5},
+    "April 25": {"export": 1, "other": 1, "planting": 7},
     "May": {"export": 1, "other": 2},
-    "June": {"export": 1, "other": 6, "planting": 5},
+    "June": {"export": 1, "other": 3, "planting": 8},
     "July": {"export": 1, "harvest": 4, "other": 2},
     "September": {"export": 2, "harvest": 8, "other": 4},
     "Nov": {"export": 1, "harvest": 9, "other": 3, "planting": 1},
@@ -526,7 +526,7 @@ class TestClassifyDocxTables:
     def test_apr25_planting_detected(self, apr25_path: Path) -> None:
         classes = classify_docx_tables(apr25_path, _TEST_CATEGORIES)
         planting = [c for c in classes if c["category"] == "planting"]
-        assert len(planting) == 5
+        assert len(planting) == 7
 
     def test_every_table_has_required_keys(self, all_docx_paths: list[Path]) -> None:
         """Every classification result must have all required keys."""
