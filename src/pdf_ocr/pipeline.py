@@ -1,6 +1,6 @@
 """Pipeline orchestration helpers for contract-driven document extraction.
 
-Three composable async helpers layered from granular to convenient:
+Four composable async helpers layered from granular to convenient:
 
 1. :func:`compress_and_classify_async` — compress a document and classify its
    tables into output categories (DOCX vs PDF branching, thread-pool wrapping).
@@ -8,8 +8,19 @@ Three composable async helpers layered from granular to convenient:
    (year template resolution, batched interpretation, enrichment, formatting).
 3. :func:`process_document_async` — convenience: full per-document pipeline
    composing the two helpers above plus report-date resolution.
+4. :func:`run_pipeline_async` — top-level orchestrator: load contract, process
+   all documents concurrently, merge and save results.
 
 Usage::
+
+    from pdf_ocr.pipeline import run_pipeline_async
+
+    results, merged, paths, elapsed = await run_pipeline_async(
+        "contracts/au_shipping_stem.json",
+        ["inputs/2857439.pdf", "inputs/other.pdf"],
+    )
+
+Or use the lower-level helpers directly::
 
     from pdf_ocr.contracts import load_contract
     from pdf_ocr.pipeline import process_document_async
@@ -25,6 +36,7 @@ import asyncio
 import copy
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pandas as pd
 
@@ -280,3 +292,91 @@ async def _interpret_one(
         pivot_years=pivot_years,
     )
     return out_name, df
+
+
+# ─── Layer 4: Multi-document orchestration ───────────────────────────────────
+
+
+def save(
+    results: list[DocumentResult],
+    output_dir: str | Path = "outputs",
+) -> tuple[dict[str, list[pd.DataFrame]], dict[str, Path]]:
+    """Merge DataFrames across documents and write each output to Parquet.
+
+    Args:
+        results: List of :class:`DocumentResult` from :func:`process_document_async`.
+        output_dir: Directory for output Parquet files (created if needed).
+
+    Returns:
+        ``(merged, paths)`` — *merged* maps output name → list of DataFrames,
+        *paths* maps output name → written Parquet path.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    merged: dict[str, list[pd.DataFrame]] = {}
+
+    for result in results:
+        for out_name, df in result.dataframes.items():
+            if out_name not in merged:
+                merged[out_name] = []
+            merged[out_name].append(df)
+
+    paths: dict[str, Path] = {}
+    for out_name, frames in merged.items():
+        df = pd.concat(frames, ignore_index=True)
+        path = output_dir / f"{out_name}.parquet"
+        df.to_parquet(path, index=False)
+        paths[out_name] = path
+        print(f"  {out_name}: {path} ({len(df)} rows)")
+
+    return merged, paths
+
+
+async def run_pipeline_async(
+    contract_path: str | Path,
+    doc_paths: list[str | Path],
+    output_dir: str | Path = "outputs",
+    *,
+    refine_headers: bool = True,
+) -> tuple[list[DocumentResult], dict[str, list[pd.DataFrame]], dict[str, Path], float]:
+    """Orchestrate the full pipeline with document-level concurrency.
+
+    Loads the contract, processes all documents in parallel via
+    :func:`process_document_async`, then merges and saves results.
+
+    Args:
+        contract_path: Path to the JSON data contract.
+        doc_paths: Paths to the documents to process.
+        output_dir: Directory for output Parquet files.
+        refine_headers: Whether to refine PDF headers (passed through).
+
+    Returns:
+        ``(results, merged, paths, elapsed)`` — *results* is a list of
+        :class:`DocumentResult`, *merged*/*paths* from :func:`save`,
+        *elapsed* is wall-clock seconds.
+    """
+    import time
+
+    from pdf_ocr.contracts import load_contract
+
+    t0 = time.perf_counter()
+
+    print("PREPARE")
+    cc = load_contract(contract_path)
+    print(f"  Contract: {cc.provider}, Model: {cc.model}, Outputs: {list(cc.outputs.keys())}")
+
+    print("\nPROCESS (async — compress + classify + interpret per document)")
+    results = await asyncio.gather(
+        *[process_document_async(str(p), cc, refine_headers=refine_headers) for p in doc_paths]
+    )
+    for r in results:
+        cats = list(r.dataframes.keys())
+        rows = sum(len(df) for df in r.dataframes.values())
+        print(f"  {Path(r.doc_path).name[:50]}: {cats} → {rows} records")
+
+    print("\nSAVE")
+    merged, paths = save(results, output_dir)
+
+    elapsed = time.perf_counter() - t0
+    print(f"\nDone in {elapsed:.1f}s")
+    return results, merged, paths, elapsed

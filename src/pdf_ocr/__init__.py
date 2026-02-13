@@ -46,6 +46,8 @@ from pdf_ocr.pipeline import (
     compress_and_classify_async,
     interpret_output_async,
     process_document_async,
+    run_pipeline_async,
+    save,
 )
 from pdf_ocr.report_date import ReportDateConfig, resolve_report_date
 from pdf_ocr.interpret import (
@@ -177,6 +179,8 @@ __all__ = [
     "compress_and_classify_async",
     "interpret_output_async",
     "process_document_async",
+    "run_pipeline_async",
+    "save",
     # Core types
     "CanonicalSchema",
     "CellType",
