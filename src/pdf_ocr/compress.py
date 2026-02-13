@@ -1604,18 +1604,17 @@ def _build_stacked_headers(
             if ci in row_assignments:
                 col_fragments[ci].append(row_assignments[ci])
 
-    # Build final column names by joining fragments.
+    # Build final column names: fragment-level dedup + ` / ` join.
+    # This produces compound headers like "Group / Metric" that match
+    # the DOCX extractor's ` / ` separator convention.
     column_names = []
     for fragments in col_fragments:
-        # Deduplicate consecutive identical words (can happen with overlapping
-        # header spans that get assigned to the same column).
-        deduped_words: list[str] = []
+        deduped: list[str] = []
         for fragment in fragments:
-            for word in fragment.split():
-                if not deduped_words or word != deduped_words[-1]:
-                    deduped_words.append(word)
-        name = " ".join(deduped_words)
-        column_names.append(name)
+            f = fragment.strip()
+            if f and (not deduped or f != deduped[-1]):
+                deduped.append(f)
+        column_names.append(" / ".join(deduped))
 
     return column_names
 

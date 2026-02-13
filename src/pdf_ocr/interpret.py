@@ -937,6 +937,504 @@ def _merge_parsed_chunks(chunks: list[baml_types.ParsedTable]) -> baml_types.Par
     )
 
 
+# ─── Deterministic pipe-table parser ──────────────────────────────────────────
+
+
+@dataclass
+class _DeterministicParsed:
+    """Result of deterministic pipe-table parsing (no LLM)."""
+
+    title: str | None
+    headers: list[str]  # column names from pipe header row
+    data_rows: list[list[str]]  # cell values per row
+    sections: list[tuple[str, int, int]]  # (label, start_row_inclusive, end_row_inclusive)
+    aggregation_rows: list[list[str]]  # ||rows
+
+
+def _split_pipe_row(line: str) -> list[str]:
+    """Split a pipe-delimited row into stripped cell values.
+
+    Handles leading/trailing pipes: ``| A | B | C |`` → ``["A", "B", "C"]``.
+    """
+    parts = line.split("|")
+    # Strip first and last empty strings from leading/trailing |
+    if parts and not parts[0].strip():
+        parts = parts[1:]
+    if parts and not parts[-1].strip():
+        parts = parts[:-1]
+    return [p.strip() for p in parts]
+
+
+_TITLE_RE = re.compile(r"^##\s+(.+)")
+_SECTION_LABEL_RE = re.compile(r"^\*\*(.+)\*\*$")
+_SEPARATOR_RE = re.compile(r"^\|[-| :]+\|$")
+
+
+def _parse_pipe_table_deterministic(compressed_text: str) -> _DeterministicParsed | None:
+    """Parse compressed pipe-table markdown into structured data.
+
+    Returns ``None`` if the text does not contain a recognizable pipe-table.
+    """
+    lines = compressed_text.split("\n")
+
+    title: str | None = None
+    headers: list[str] = []
+    data_rows: list[list[str]] = []
+    sections: list[tuple[str, int, int]] = []  # (label, start, end) inclusive
+    aggregation_rows: list[list[str]] = []
+
+    found_header = False
+    found_separator = False
+    current_section: str | None = None
+    section_start: int | None = None
+
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+
+        # Title: ## heading
+        if not found_header:
+            m = _TITLE_RE.match(s)
+            if m:
+                title = m.group(1).strip()
+                continue
+
+        # Header row: first pipe row before separator
+        if not found_header and s.startswith("|") and not _SEPARATOR_RE.match(s):
+            headers = _split_pipe_row(s)
+            found_header = True
+            continue
+
+        # Separator: |---|---|...|
+        if found_header and not found_separator and _SEPARATOR_RE.match(s):
+            found_separator = True
+            continue
+
+        if not found_separator:
+            continue
+
+        # After separator: data rows, aggregation rows, section labels, or re-headers
+
+        # Section label: **BOLD TEXT**
+        m = _SECTION_LABEL_RE.match(s)
+        if m:
+            # Close previous section
+            if current_section is not None and section_start is not None:
+                sections.append((current_section, section_start, len(data_rows) - 1))
+            current_section = m.group(1).strip()
+            section_start = len(data_rows)
+            continue
+
+        # Skip repeated separator/header rows between sections
+        if _SEPARATOR_RE.match(s):
+            continue
+        if s.startswith("|") and not s.startswith("||"):
+            # Check if this looks like a re-header (same content as headers)
+            candidate = _split_pipe_row(s)
+            if candidate == headers:
+                continue
+
+        # Aggregation row: || prefix (first cell empty)
+        if s.startswith("||"):
+            aggregation_rows.append(_split_pipe_row(s))
+            continue
+
+        # Data row
+        if s.startswith("|"):
+            data_rows.append(_split_pipe_row(s))
+            continue
+
+        # Plain text section header (no bold markers) — used by some formats
+        if not s.startswith("|") and "\t" not in s:
+            # Close previous section
+            if current_section is not None and section_start is not None:
+                sections.append((current_section, section_start, len(data_rows) - 1))
+            current_section = s
+            section_start = len(data_rows)
+
+    # Close final section
+    if current_section is not None and section_start is not None and data_rows:
+        sections.append((current_section, section_start, len(data_rows) - 1))
+
+    if not found_separator or not headers:
+        return None
+
+    return _DeterministicParsed(
+        title=title,
+        headers=headers,
+        data_rows=data_rows,
+        sections=sections,
+        aggregation_rows=aggregation_rows,
+    )
+
+
+# ─── Deterministic schema mapper ─────────────────────────────────────────────
+
+
+@dataclass
+class _ColumnGroup:
+    """A group of header columns that share the same dimension values."""
+
+    dimensions: list[tuple[ColumnDef, str]]  # (schema_col, header_text_value)
+    measures: list[tuple[int, ColumnDef]]  # (header_col_index, schema_col)
+
+
+def _map_to_schema_deterministic(
+    parsed: _DeterministicParsed,
+    schema: CanonicalSchema,
+) -> tuple[baml_types.MappedTable | None, list[str]]:
+    """Try to map parsed pipe-table to schema using alias matching only.
+
+    Returns ``(mapped_table, unmatched_parts)``.  When *unmatched_parts* is
+    empty, the mapping is complete.  When non-empty, the caller should fall
+    back to LLM interpretation.
+    """
+    if not parsed.headers or not parsed.data_rows:
+        return None, ["empty table"]
+
+    # Phase 1: Match header parts to schema aliases (case-insensitive)
+    # Build alias → list of schema columns (multiple columns may share an alias,
+    # e.g. Value(float) and Year(int) both have "2025")
+    alias_to_cols: dict[str, list[ColumnDef]] = {}
+    for col in schema.columns:
+        for alias in col.aliases:
+            alias_to_cols.setdefault(alias.strip().lower(), []).append(col)
+
+    MEASURE_TYPES = {"int", "float"}
+    DIMENSION_TYPES = {"string", "date"}
+
+    def _resolve_alias(part: str) -> list[ColumnDef]:
+        """Resolve a header part to matching schema column(s)."""
+        matches = alias_to_cols.get(part.lower(), [])
+        if len(matches) <= 1:
+            return matches
+        # Type-based disambiguation: when the same alias matches a dimension
+        # (string/date) AND a measure (int/float), keep both — they serve
+        # different roles (dimension gets header text, measure gets cell value).
+        dims = [c for c in matches if c.type in DIMENSION_TYPES]
+        meas = [c for c in matches if c.type in MEASURE_TYPES]
+        if dims and meas:
+            return matches  # keep all — different roles
+        # All measure types: int vs float have different roles — float columns
+        # are cell-value measures, int columns often serve as identifiers or
+        # period labels (e.g., Year=2025 vs Value=cell_data).
+        floats = [c for c in matches if c.type == "float"]
+        ints = [c for c in matches if c.type == "int"]
+        if floats and ints:
+            return matches  # keep all — float=measure, int=pseudo-dimension
+        # Same exact type: keep only the first (arbitrary but deterministic)
+        return [matches[0]]
+
+    # For each header column, split on ` / ` and match parts
+    header_mappings: list[list[tuple[str, list[ColumnDef]]]] = []
+    # (part_text, matched_cols) per header column
+
+    for hi, header in enumerate(parsed.headers):
+        parts = [p.strip() for p in header.split(" / ")] if " / " in header else [header.strip()]
+        col_parts: list[tuple[str, list[ColumnDef]]] = []
+        for part in parts:
+            col_parts.append((part, _resolve_alias(part)))
+        header_mappings.append(col_parts)
+
+    # Phase 2: Classify columns — dimension vs measure
+    # Dimension: type in ("string", "date") → value comes from header text
+    # Measure: type in ("int", "float") → value comes from cell
+    # When the same alias matches both types, the part contributes to BOTH:
+    # the dimension column gets the header text, the measure column gets cell data.
+
+    shared_cols: list[tuple[int, ColumnDef]] = []  # (header_col_idx, schema_col)
+    group_info: list[dict] = []  # per header column: {"dimensions": [...], "measures": [...], "unmatched": [...]}
+
+    for hi, col_parts in enumerate(header_mappings):
+        info: dict = {"dimensions": [], "measures": [], "unmatched": []}
+        for part_text, matched_cols in col_parts:
+            if not matched_cols:
+                info["unmatched"].append(part_text)
+            else:
+                # When int and float columns share an alias, the float is the
+                # measure (cell value) and the int is a dimension (header text
+                # value, e.g., Year="2025" vs Value=cell_data).
+                has_float = any(c.type == "float" for c in matched_cols)
+                for matched_col in matched_cols:
+                    if matched_col.type in DIMENSION_TYPES:
+                        info["dimensions"].append((matched_col, part_text))
+                    elif matched_col.type == "int" and has_float:
+                        info["dimensions"].append((matched_col, part_text))
+                    else:
+                        info["measures"].append((hi, matched_col))
+        group_info.append(info)
+
+        # Simple column: single part, single match, dimension → shared column
+        if len(col_parts) == 1 and len(col_parts[0][1]) >= 1:
+            all_dim = all(c.type in DIMENSION_TYPES for c in col_parts[0][1])
+            if all_dim:
+                shared_cols.append((hi, col_parts[0][1][0]))
+
+    # Classify unmatched parts: lenient approach
+    # - Columns with NO matches at all → entirely skipped (unmapped), not blocking
+    # - Columns with SOME matches → unmatched parts are annotations, not blocking
+    # - Only flag for LLM fallback when a matched column has ambiguous unmatched parts
+    #   that could be important (currently: never — we trust the alias coverage)
+    unmatched_parts: list[str] = []
+    for hi, info in enumerate(group_info):
+        if not info["unmatched"]:
+            continue
+        has_matches = bool(info["dimensions"] or info["measures"])
+        if has_matches:
+            # Column has matched parts — unmatched parts are annotations (skip)
+            continue
+        # Column has NO matches at all — check if it's skippable
+        all_skippable = all(
+            p in ("%", "%%", "pct", "share") for p in info["unmatched"]
+        )
+        if all_skippable:
+            continue
+        # Entirely unmatched column — flag for LLM fallback
+        unmatched_parts.extend(info["unmatched"])
+
+    if unmatched_parts:
+        return None, unmatched_parts
+
+    # Phase 3: Detect unpivot groups
+    # Find dimension columns that appear with ≥2 distinct values across headers
+    # These form the group dimension (e.g., "crop" has "spring crops" and "spring grain")
+    dim_values: dict[str, list[tuple[int, str]]] = {}  # col_name → [(header_idx, value)]
+    for hi, info in enumerate(group_info):
+        for matched_col, value in info["dimensions"]:
+            dim_values.setdefault(matched_col.name, []).append((hi, value))
+
+    # Group dimensions: appear in >1 header columns with distinct values
+    group_dim_names: set[str] = set()
+    for col_name, entries in dim_values.items():
+        unique_values = {v for _, v in entries}
+        if len(unique_values) >= 2:
+            group_dim_names.add(col_name)
+
+    # Constant dimensions: non-group dims with a single unique value that appear
+    # in ≥2 header columns (e.g., Year="2025" when Year(int) shares alias with
+    # Value(float), or Unit="Th.ha." across multiple label columns).
+    constant_dims: list[tuple[ColumnDef, str]] = []  # applied to every record
+    for col_name, entries in dim_values.items():
+        if col_name in group_dim_names:
+            continue
+        unique_values = {v for _, v in entries}
+        if len(unique_values) == 1 and len(entries) >= 2:
+            col_def = next(c for c in schema.columns if c.name == col_name)
+            value = next(iter(unique_values))
+            constant_dims.append((col_def, value))
+
+    # Re-classify compound label columns that contain non-group dimensions.
+    # For compound header columns with only non-group dimensions and no measures
+    # (e.g., "Th.ha. / Region"):
+    # - The LAST dimension part → shared column (cell value, e.g. Region)
+    # - Earlier dimension parts → constant dimensions (header text, e.g. Th.ha.)
+    # Skip columns whose dims are already fully covered by existing
+    # constant_dims / shared_cols (e.g., "Th.ha. / MOA 2024" when Th.ha. is
+    # already a constant from another column).
+    for hi, info in enumerate(group_info):
+        if any(idx == hi for idx, _ in shared_cols):
+            continue  # already a shared col
+        dims = info["dimensions"]
+        has_group_dims = any(col.name in group_dim_names for col, _ in dims)
+        if has_group_dims or info["measures"]:
+            continue  # participates in groups already
+        if not dims:
+            continue
+        # Check if all dimensions are already covered
+        all_covered = all(
+            any(cd.name == col.name for cd, _ in constant_dims)
+            or any(sc.name == col.name for _, sc in shared_cols)
+            for col, _ in dims
+        )
+        if all_covered:
+            continue  # dimensions already accounted for — skip this column
+        # Non-group, non-measure compound header column:
+        # Last dimension → shared (cell value), rest → constant
+        *const_parts, cell_part = dims
+        shared_cols.append((hi, cell_part[0]))
+        for col_def, val in const_parts:
+            if not any(cd.name == col_def.name for cd, _ in constant_dims):
+                constant_dims.append((col_def, val))
+
+    # Build column groups
+    if not group_dim_names:
+        # No unpivoting needed — single group with all measure columns
+        measures: list[tuple[int, ColumnDef]] = []
+        for hi, info in enumerate(group_info):
+            measures.extend(info["measures"])
+
+        if measures or shared_cols:
+            groups = [_ColumnGroup(dimensions=list(constant_dims), measures=measures)]
+        else:
+            return None, ["no measures found"]
+    else:
+        # Group columns by their group-dimension values
+        # Each unique combination of group-dimension values forms a group
+        group_key_to_cols: dict[tuple[tuple[str, str], ...], _ColumnGroup] = {}
+
+        for hi, info in enumerate(group_info):
+            # Skip shared columns
+            if any(idx == hi for idx, _ in shared_cols):
+                continue
+
+            # Extract group dimension values for this header column
+            group_dims: list[tuple[str, str]] = []
+            for matched_col, value in info["dimensions"]:
+                if matched_col.name in group_dim_names:
+                    group_dims.append((matched_col.name, value))
+
+            if not group_dims and not info["measures"]:
+                continue  # no group dims and no measures → skip
+
+            key = tuple(sorted(group_dims))
+            if key not in group_key_to_cols:
+                # Build dimension list: group dims + constant dims
+                dims: list[tuple[ColumnDef, str]] = []
+                for matched_col, value in info["dimensions"]:
+                    if matched_col.name in group_dim_names:
+                        dims.append((matched_col, value))
+                dims.extend(constant_dims)
+                group_key_to_cols[key] = _ColumnGroup(dimensions=dims, measures=[])
+
+            group_key_to_cols[key].measures.extend(info["measures"])
+
+        groups = list(group_key_to_cols.values())
+
+    if not groups:
+        return None, ["no column groups formed"]
+
+    # Detect section-to-schema mapping
+    section_col: ColumnDef | None = None
+    if parsed.sections:
+        # Find a schema column whose aliases match section labels
+        for col in schema.columns:
+            col_aliases_lower = {a.lower() for a in col.aliases}
+            section_labels_lower = {label.lower() for label, _, _ in parsed.sections}
+            if section_labels_lower & col_aliases_lower:
+                section_col = col
+                break
+
+    # Phase 4: Build records
+    records: list[dict] = []
+
+    def _build_records_for_range(
+        start: int, end: int, section_label: str | None
+    ) -> None:
+        for row_idx in range(start, end + 1):
+            if row_idx >= len(parsed.data_rows):
+                break
+            row = parsed.data_rows[row_idx]
+            for group in groups:
+                record: dict = {}
+                # Shared columns: value from cell
+                for col_idx, schema_col in shared_cols:
+                    if col_idx < len(row):
+                        record[schema_col.name] = row[col_idx]
+                # Group dimension values: value from header text
+                for schema_col, value in group.dimensions:
+                    record[schema_col.name] = value
+                # Measure values: value from cell
+                for col_idx, schema_col in group.measures:
+                    if col_idx < len(row):
+                        record[schema_col.name] = row[col_idx]
+                # Section label → matching schema column
+                if section_col and section_label:
+                    record[section_col.name] = section_label
+                records.append(record)
+
+    if parsed.sections:
+        for label, start, end in parsed.sections:
+            _build_records_for_range(start, end, label)
+    else:
+        _build_records_for_range(0, len(parsed.data_rows) - 1, None)
+
+    # Phase 5: Build MappedTable
+    # Build MappedRecord instances
+    mapped_records: list[baml_types.MappedRecord] = []
+    for rec in records:
+        mapped_records.append(baml_types.MappedRecord(**rec))
+
+    # Build field mappings
+    field_mappings: list[baml_types.FieldMapping] = []
+    for col in schema.columns:
+        # Determine source
+        source = "deterministic alias matching"
+        if any(col.name == sc.name for _, sc in shared_cols):
+            source = "cell value (shared column)"
+        elif col.name in group_dim_names:
+            source = "header text (unpivot dimension)"
+        elif section_col and col.name == section_col.name:
+            source = "section label"
+
+        field_mappings.append(baml_types.FieldMapping(
+            column_name=col.name,
+            source=source,
+            rationale="Matched via schema aliases",
+            confidence=baml_types.Confidence.High,
+        ))
+
+    # Build unmapped columns (header columns not contributing to any schema column)
+    unmapped: list[str] = []
+    mapped_indices: set[int] = set()
+    for idx, _ in shared_cols:
+        mapped_indices.add(idx)
+    for group in groups:
+        for idx, _ in group.measures:
+            mapped_indices.add(idx)
+    for hi in range(len(parsed.headers)):
+        if hi not in mapped_indices and not group_info[hi]["dimensions"]:
+            unmapped.append(parsed.headers[hi])
+
+    # Detect sections for metadata
+    sections_detected: list[str] | None = None
+    if parsed.sections:
+        sections_detected = [label for label, _, _ in parsed.sections]
+
+    metadata = baml_types.InterpretationMetadata(
+        model="deterministic",
+        table_type_inference=baml_types.TableTypeInference(
+            table_type=(
+                baml_types.TableType.PivotedTable if group_dim_names
+                else baml_types.TableType.FlatHeader
+            ),
+            mapping_strategy_used="unpivot" if group_dim_names else "1:1 row mapping",
+        ),
+        field_mappings=field_mappings,
+        sections_detected=sections_detected,
+    )
+
+    mapped_table = baml_types.MappedTable(
+        records=mapped_records,
+        unmapped_columns=unmapped,
+        mapping_notes="Deterministic mapping - all columns resolved via alias matching",
+        metadata=metadata,
+    )
+
+    return mapped_table, []
+
+
+def _try_deterministic(
+    page_text: str,
+    schema: CanonicalSchema,
+) -> baml_types.MappedTable | None:
+    """Attempt deterministic interpretation of a single page.
+
+    Returns a ``MappedTable`` if fully resolved, or ``None`` to signal
+    that LLM fallback is needed.
+    """
+    parsed = _parse_pipe_table_deterministic(page_text)
+    if parsed is None:
+        return None
+    result, unmatched = _map_to_schema_deterministic(parsed, schema)
+    if result is not None and not unmatched:
+        log.info("Deterministic mapping: %d records", len(result.records))
+        return result
+    if unmatched:
+        log.debug("Deterministic mapping failed, unmatched: %s", unmatched)
+    return None
+
+
 # ─── Batched async orchestrator ────────────────────────────────────────────────
 
 
@@ -953,6 +1451,11 @@ async def _interpret_pages_batched_async(
 ) -> dict[int, baml_types.MappedTable]:
     """Concurrently run the 2-step pipeline with step-2 batching.
 
+    Tries deterministic alias-based mapping first for each page.  Pages that
+    cannot be resolved deterministically fall through to the LLM pipeline.
+    Deterministic mapping is skipped when *page_images* is provided (vision
+    mode implies garbled headers that need LLM).
+
     Returns a dict keyed by 1-indexed page number, where each value is a
     ``MappedTable`` containing all records for that page (batches merged).
 
@@ -964,6 +1467,26 @@ async def _interpret_pages_batched_async(
     chunks before Step 1 to prevent LLM output truncation, then merged back
     after Step 1 completes.
     """
+    # Try deterministic mapping first (skip when vision is enabled)
+    deterministic_results: dict[int, baml_types.MappedTable] = {}
+    llm_page_indices: list[int] = []  # original 0-based indices needing LLM
+
+    if page_images is None:
+        for pi, page in enumerate(pages):
+            det = _try_deterministic(page, schema)
+            if det is not None:
+                deterministic_results[pi + 1] = det  # 1-indexed
+                log.info("Page %d: deterministic mapping (%d records)", pi + 1, len(det.records))
+            else:
+                llm_page_indices.append(pi)
+        if not llm_page_indices:
+            return deterministic_results
+        # Narrow pages to only those needing LLM
+        llm_pages = [pages[i] for i in llm_page_indices]
+    else:
+        llm_pages = pages
+        llm_page_indices = list(range(len(pages)))
+
     effective_vision_model = vision_model or model
 
     # Step 0 (optional): infer visual schemas concurrently
@@ -987,7 +1510,7 @@ async def _interpret_pages_batched_async(
     expanded_pages: list[str] = []
     page_chunk_counts: list[int] = []  # how many chunks per original page
 
-    for page in pages:
+    for page in llm_pages:
         chunks = _split_pipe_table(page, step1_max_rows)
         expanded_pages.extend(chunks)
         page_chunk_counts.append(len(chunks))
@@ -1054,7 +1577,7 @@ async def _interpret_pages_batched_async(
                     )
                     # Re-parse this page without vision guidance
                     fallback_parsed = await analyze_and_parse_async(
-                        pages[pi], model=model, fallback_model=fallback_model
+                        llm_pages[pi], model=model, fallback_model=fallback_model
                     )
                     parsed_tables[pi] = fallback_parsed
                     log.info(
@@ -1065,7 +1588,7 @@ async def _interpret_pages_batched_async(
     # Validate section boundaries against compressed text
     for pi, pt in enumerate(parsed_tables):
         corrected = _validate_section_boundaries(
-            pt.notes, len(pt.data_rows), pages[pi]
+            pt.notes, len(pt.data_rows), llm_pages[pi]
         )
         if corrected != pt.notes:
             log.info(
@@ -1090,7 +1613,7 @@ async def _interpret_pages_batched_async(
     log.info(
         "Step 2: %d batches from %d pages (batch_size=%d)",
         len(all_batches),
-        len(pages),
+        len(llm_pages),
         batch_size,
     )
 
@@ -1132,9 +1655,15 @@ async def _interpret_pages_batched_async(
             )
             mapped.metadata.table_type_inference.table_type = parsed.table_type
 
-    # Group batch results by page
-    page_numbers = [b.page_index + 1 for b in all_batches]  # 1-indexed
-    return _group_by_page(list(mapped_tables), page_numbers)
+    # Group batch results by LLM-local page number, then remap to original indices
+    page_numbers = [b.page_index + 1 for b in all_batches]  # 1-indexed within llm_pages
+    llm_grouped = _group_by_page(list(mapped_tables), page_numbers)
+
+    # Remap LLM results to original page indices and merge with deterministic results
+    for llm_page, mt in llm_grouped.items():
+        original_idx = llm_page_indices[llm_page - 1]
+        deterministic_results[original_idx + 1] = mt
+    return deterministic_results
 
 
 # ─── Sync API ─────────────────────────────────────────────────────────────────
@@ -1235,6 +1764,7 @@ def interpret_table(
     step1_max_rows: int = 40,
     pdf_path: str | bytes | Path | None = None,
     vision_model: str | None = None,
+    unpivot: bool = True,
 ) -> dict[int, baml_types.MappedTable]:
     """Full 2-step pipeline: analyze+parse, then map to schema.
 
@@ -1272,9 +1802,16 @@ def interpret_table(
             enables vision-based schema inference (step 0) and guided parsing
             (step 1).
         vision_model: LLM to use for vision step 0. Defaults to *model*.
+        unpivot: When True (default), detect and unpivot pivoted tables
+            before interpretation.  Pivoted tables have repeating compound
+            header groups (e.g. ``"crop A / 2025"``, ``"crop B / 2025"``).
     """
     compressed_text = normalize_pipe_table(compressed_text)
     pages = _split_pages(compressed_text, page_separator)
+
+    if unpivot:
+        from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
+        pages = [_unpivot(p).text for p in pages]
 
     # Render page images when vision is enabled
     page_images: list[str] | None = None
@@ -1282,13 +1819,33 @@ def interpret_table(
         log.info("Vision enabled: rendering %d page(s)", len(pages))
         page_images = _render_page_images(pdf_path, pages=list(range(len(pages))))
 
-    if len(pages) == 1 and page_images is None:
+    # Try deterministic mapping first (skip when vision is enabled)
+    if page_images is None:
+        det_results: dict[int, baml_types.MappedTable] = {}
+        llm_needed: list[int] = []
+        for pi, page in enumerate(pages):
+            det = _try_deterministic(page, schema)
+            if det is not None:
+                det_results[pi + 1] = det
+                log.info("Page %d: deterministic mapping (%d records)", pi + 1, len(det.records))
+            else:
+                llm_needed.append(pi)
+        if not llm_needed:
+            return det_results
+        # Only LLM-needed pages continue below
+        llm_pages = [pages[i] for i in llm_needed]
+    else:
+        det_results = {}
+        llm_needed = list(range(len(pages)))
+        llm_pages = pages
+
+    if len(llm_pages) == 1 and page_images is None:
         # Fast path: single page, no vision
         # Pre-split if table is large to prevent Step 1 truncation
-        chunks = _split_pipe_table(pages[0], step1_max_rows)
+        chunks = _split_pipe_table(llm_pages[0], step1_max_rows)
         if len(chunks) == 1:
             # No split needed — try fully sync
-            parsed = analyze_and_parse(pages[0], model=model, fallback_model=fallback_model)
+            parsed = analyze_and_parse(llm_pages[0], model=model, fallback_model=fallback_model)
         else:
             # Split needed — run Step 1 on chunks concurrently, then merge
             parsed_chunks = _run_async(asyncio.gather(
@@ -1298,7 +1855,7 @@ def interpret_table(
 
         # Validate section boundaries against compressed text
         corrected = _validate_section_boundaries(
-            parsed.notes, len(parsed.data_rows), pages[0]
+            parsed.notes, len(parsed.data_rows), llm_pages[0]
         )
         if corrected != parsed.notes:
             log.info("Section boundaries corrected: %s", corrected)
@@ -1310,29 +1867,48 @@ def interpret_table(
                 notes=corrected,
             )
         batches = _create_batches(parsed, page_index=0, batch_size=batch_size)
+        orig_page = llm_needed[0] + 1  # 1-indexed original page number
         if len(batches) == 1:
             # Fast path: single page, fits in one batch — sync, no event loop
             result = map_to_schema(parsed, schema, model=model, fallback_model=fallback_model)
             # Fix table_type: use authoritative value from step 1
             if result.metadata.table_type_inference.table_type != parsed.table_type:
                 result.metadata.table_type_inference.table_type = parsed.table_type
-            return {1: result}
+            det_results[orig_page] = result
+            return det_results
         # Single page but multiple batches — need async for concurrency
+        llm_result = _run_async(
+            _interpret_pages_batched_async(
+                llm_pages, schema, batch_size=batch_size, step1_max_rows=step1_max_rows,
+                model=model, fallback_model=fallback_model,
+            )
+        )
+        # Remap: _interpret_pages_batched_async returns 1-indexed keys
+        for llm_page, mt in llm_result.items():
+            det_results[llm_needed[llm_page - 1] + 1] = mt
+        return det_results
+
+    # Multiple pages or vision enabled → batched concurrent processing
+    # _interpret_pages_batched_async handles deterministic internally when
+    # page_images is None, so pass original pages for vision case
+    if page_images is not None:
         return _run_async(
             _interpret_pages_batched_async(
                 pages, schema, batch_size=batch_size, step1_max_rows=step1_max_rows,
                 model=model, fallback_model=fallback_model,
+                page_images=page_images, vision_model=vision_model,
             )
         )
-
-    # Multiple pages or vision enabled → batched concurrent processing
-    return _run_async(
+    # Non-vision multi-page: use llm_pages subset
+    llm_result = _run_async(
         _interpret_pages_batched_async(
-            pages, schema, batch_size=batch_size, step1_max_rows=step1_max_rows,
+            llm_pages, schema, batch_size=batch_size, step1_max_rows=step1_max_rows,
             model=model, fallback_model=fallback_model,
-            page_images=page_images, vision_model=vision_model,
         )
     )
+    for llm_page, mt in llm_result.items():
+        det_results[llm_needed[llm_page - 1] + 1] = mt
+    return det_results
 
 
 def interpret_tables(
@@ -1342,6 +1918,7 @@ def interpret_tables(
     model: str = DEFAULT_MODEL,
     fallback_model: str | None = None,
     step1_max_rows: int = 40,
+    unpivot: bool = True,
 ) -> list[baml_types.MappedTable]:
     """Interpret multiple independent tables concurrently.
 
@@ -1359,6 +1936,8 @@ def interpret_tables(
         model: LLM to use for all calls.
         fallback_model: If set, retry each step with this model on failure.
         step1_max_rows: Maximum data rows per step-1 LLM call (default 40).
+        unpivot: When True (default), detect and unpivot pivoted tables
+            before interpretation.
 
     Returns:
         List of ``MappedTable`` results, one per input text, in the same
@@ -1367,7 +1946,7 @@ def interpret_tables(
     return _run_async(
         interpret_tables_async(
             compressed_texts, schema, model=model, fallback_model=fallback_model,
-            step1_max_rows=step1_max_rows,
+            step1_max_rows=step1_max_rows, unpivot=unpivot,
         )
     )
 
@@ -1379,6 +1958,7 @@ def interpret_table_single_shot(
     model: str = DEFAULT_MODEL,
     fallback_model: str | None = None,
     page_separator: str = "\f",
+    unpivot: bool = True,
 ) -> dict[int, baml_types.MappedTable]:
     """Single-shot: analyze, parse, and map in one LLM call.
 
@@ -1402,9 +1982,27 @@ def interpret_table_single_shot(
         model: LLM to use.
         fallback_model: If set, retry with this model when ``model`` fails.
         page_separator: Delimiter between pages (default ``"\\f"``).
+        unpivot: When True (default), detect and unpivot pivoted tables
+            before interpretation.
     """
     compressed_text = normalize_pipe_table(compressed_text)
     pages = _split_pages(compressed_text, page_separator)
+
+    if unpivot:
+        from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
+        pages = [_unpivot(p).text for p in pages]
+
+    # Try deterministic mapping first
+    det_results: dict[int, baml_types.MappedTable] = {}
+    llm_needed: list[int] = []
+    for pi, page in enumerate(pages):
+        det = _try_deterministic(page, schema)
+        if det is not None:
+            det_results[pi + 1] = det
+        else:
+            llm_needed.append(pi)
+    if not llm_needed:
+        return det_results
 
     if len(pages) == 1:
         tb = _build_type_builder(schema)
@@ -1442,6 +2040,9 @@ async def _interpret_pages_async(
 ) -> list[baml_types.MappedTable]:
     """Concurrently run the 2-step pipeline on multiple pages.
 
+    Tries deterministic alias-based mapping first for each page.  Pages that
+    cannot be resolved deterministically fall through to the LLM pipeline.
+
     Step 1: parse all pages in parallel (with pre-splitting for large tables).
     Step 2: map all parsed tables in parallel (one call per page — no batching).
 
@@ -1453,10 +2054,27 @@ async def _interpret_pages_async(
        :func:`interpret_tables_async` continues to use this function for
        callers who want explicit control.
     """
+    # Try deterministic mapping first
+    results: list[baml_types.MappedTable | None] = [None] * len(pages)
+    llm_indices: list[int] = []
+
+    for pi, page in enumerate(pages):
+        det = _try_deterministic(page, schema)
+        if det is not None:
+            results[pi] = det
+            log.info("Page %d: deterministic mapping (%d records)", pi + 1, len(det.records))
+        else:
+            llm_indices.append(pi)
+
+    if not llm_indices:
+        return [r for r in results if r is not None]
+
+    llm_pages = [pages[i] for i in llm_indices]
+
     # Pre-split large pages to prevent Step 1 output truncation
     expanded_pages: list[str] = []
     page_chunk_counts: list[int] = []
-    for page in pages:
+    for page in llm_pages:
         chunks = _split_pipe_table(page, step1_max_rows)
         expanded_pages.extend(chunks)
         page_chunk_counts.append(len(chunks))
@@ -1475,10 +2093,15 @@ async def _interpret_pages_async(
             merged_parsed.append(_merge_parsed_chunks(parsed_tables[idx : idx + count]))
         idx += count
 
-    mapped_tables = await asyncio.gather(
+    mapped_tables = list(await asyncio.gather(
         *(map_to_schema_async(parsed, schema, model=model, fallback_model=fallback_model) for parsed in merged_parsed)
-    )
-    return list(mapped_tables)
+    ))
+
+    # Place LLM results back into the correct positions
+    for li, orig_idx in enumerate(llm_indices):
+        results[orig_idx] = mapped_tables[li]
+
+    return [r for r in results if r is not None]
 
 
 async def _interpret_pages_single_shot_async(
@@ -1599,6 +2222,7 @@ async def interpret_table_async(
     *,
     model: str = DEFAULT_MODEL,
     fallback_model: str | None = None,
+    unpivot: bool = True,
 ) -> baml_types.MappedTable:
     """Async: full 2-step pipeline for a single table.
 
@@ -1607,8 +2231,17 @@ async def interpret_table_async(
         schema: Canonical schema to map to.
         model: LLM to use for both steps.
         fallback_model: If set, retry each step with this model on failure.
+        unpivot: When True (default), detect and unpivot pivoted tables
+            before interpretation.
     """
     compressed_text = normalize_pipe_table(compressed_text)
+    if unpivot:
+        from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
+        compressed_text = _unpivot(compressed_text).text
+    # Try deterministic mapping first
+    det = _try_deterministic(compressed_text, schema)
+    if det is not None:
+        return det
     parsed = await analyze_and_parse_async(compressed_text, model=model, fallback_model=fallback_model)
     result = await map_to_schema_async(parsed, schema, model=model, fallback_model=fallback_model)
     # Fix table_type: use authoritative value from step 1
@@ -1624,6 +2257,7 @@ async def interpret_tables_async(
     model: str = DEFAULT_MODEL,
     fallback_model: str | None = None,
     step1_max_rows: int = 40,
+    unpivot: bool = True,
 ) -> list[baml_types.MappedTable]:
     """Async: interpret multiple pre-split tables in parallel.
 
@@ -1643,13 +2277,36 @@ async def interpret_tables_async(
         model: LLM to use for all calls.
         fallback_model: If set, retry each step with this model on failure.
         step1_max_rows: Maximum data rows per step-1 LLM call (default 40).
+        unpivot: When True (default), detect and unpivot pivoted tables
+            before interpretation.
     """
     compressed_texts = [normalize_pipe_table(t) for t in compressed_texts]
+
+    if unpivot:
+        from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
+        compressed_texts = [_unpivot(t).text for t in compressed_texts]
+
+    # Try deterministic mapping first
+    results: list[baml_types.MappedTable | None] = [None] * len(compressed_texts)
+    llm_indices: list[int] = []
+
+    for ti, text in enumerate(compressed_texts):
+        det = _try_deterministic(text, schema)
+        if det is not None:
+            results[ti] = det
+            log.info("Table %d: deterministic mapping (%d records)", ti + 1, len(det.records))
+        else:
+            llm_indices.append(ti)
+
+    if not llm_indices:
+        return [r for r in results if r is not None]
+
+    llm_texts = [compressed_texts[i] for i in llm_indices]
 
     # Pre-split large tables to prevent Step 1 output truncation
     expanded_texts: list[str] = []
     table_chunk_counts: list[int] = []
-    for text in compressed_texts:
+    for text in llm_texts:
         chunks = _split_pipe_table(text, step1_max_rows)
         expanded_texts.extend(chunks)
         table_chunk_counts.append(len(chunks))
@@ -1670,11 +2327,16 @@ async def interpret_tables_async(
         idx += count
 
     # Step 2: map all parsed tables in parallel
-    mapped_tables = await asyncio.gather(
+    mapped_tables = list(await asyncio.gather(
         *(map_to_schema_async(parsed, schema, model=model, fallback_model=fallback_model) for parsed in merged_parsed)
-    )
+    ))
     # Fix table_type: use authoritative value from step 1
     for parsed, mapped in zip(merged_parsed, mapped_tables):
         if mapped.metadata.table_type_inference.table_type != parsed.table_type:
             mapped.metadata.table_type_inference.table_type = parsed.table_type
-    return list(mapped_tables)
+
+    # Place LLM results back into the correct positions
+    for li, orig_idx in enumerate(llm_indices):
+        results[orig_idx] = mapped_tables[li]
+
+    return [r for r in results if r is not None]

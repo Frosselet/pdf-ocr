@@ -418,15 +418,17 @@ def build_column_names_from_headers(header_rows: list[list[str]]) -> list[str]:
                 if text:
                     col_fragments[ci].append(text)
 
-    # Build final column names with deduplication
+    # Build final column names: fragment-level dedup + ` / ` join
+    # This produces compound headers like "Group / Metric" that match
+    # the DOCX extractor's ` / ` separator convention.
     column_names = []
     for fragments in col_fragments:
-        deduped_words: list[str] = []
+        deduped: list[str] = []
         for fragment in fragments:
-            for word in fragment.split():
-                if not deduped_words or word != deduped_words[-1]:
-                    deduped_words.append(word)
-        column_names.append(" ".join(deduped_words))
+            f = fragment.strip()
+            if f and (not deduped or f != deduped[-1]):
+                deduped.append(f)
+        column_names.append(" / ".join(deduped))
 
     return column_names
 

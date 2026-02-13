@@ -148,7 +148,8 @@ def _get_cell_text(cell: "_Cell") -> str:
     # Collect text from all paragraphs
     text_parts: list[str] = []
     for para in cell.paragraphs:
-        text = para.text.strip()
+        # split()+join collapses internal runs of whitespace to single spaces
+        text = " ".join(para.text.split())
         if text:
             text_parts.append(text)
 

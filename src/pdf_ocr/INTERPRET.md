@@ -258,7 +258,50 @@ Applied automatically in: `interpret_table()`, `interpret_table_single_shot()`, 
 
 ---
 
-### H9: Fallback Model Support
+### H9: Deterministic Mapping (`_parse_pipe_table_deterministic`, `_map_to_schema_deterministic`)
+
+**Problem**: The 2-step LLM pipeline is expensive and unreliable for tables with compound ` / ` headers. The LLM shifts columns, misassigns groups, and adds latency/cost for work that is mechanically solvable when the schema has good aliases.
+
+**Root insight**: The compressed pipe-table markdown is already fully structured. Headers, separators, data rows, section labels, and aggregation rows are all explicit syntactic patterns. When every header part matches a schema alias, the entire interpretation is a string-matching + record-building exercise.
+
+**Solution**: Try deterministic first → LLM fallback only for unmatched columns:
+
+```
+compressed text + schema
+      │
+      ▼
+_parse_pipe_table_deterministic()     ← string ops only, no LLM
+      │
+      ▼
+_DeterministicParsed (title, headers, data_rows, sections, aggregation_rows)
+      │
+      ▼
+_map_to_schema_deterministic()        ← alias matching, 5 phases
+      │
+      ├─ all parts matched ──► MappedTable (zero LLM calls)
+      │
+      └─ unmatched parts ────► fall through to LLM pipeline (H1-H8)
+```
+
+**Phase 1 — Alias matching**: Split each header on ` / `, match parts against schema aliases (case-insensitive).
+
+**Phase 2 — Classification**: Dimension (`string`/`date` → value from header text) vs measure (`int`/`float` → value from cell). Single-part dimension columns → shared (cell-value). Compound label columns → last dimension is shared, earlier parts are constants.
+
+**Phase 3 — Unpivot group detection**: Dimension columns appearing with ≥2 distinct values across headers form group dimensions (e.g., `crop` has "spring crops" and "spring grain").
+
+**Phase 4 — Record building**: For each data row × each group, build a record: shared column values from cells, group dimension values from header text, measure values from cells, section label from matching schema column.
+
+**Phase 5 — MappedTable construction**: Build `MappedTable` with `model="deterministic"`, all field mappings with `confidence=High`.
+
+**Integrated into all orchestrators**: `interpret_table()`, `interpret_table_single_shot()`, `_interpret_pages_batched_async()`, `_interpret_pages_async()`, `interpret_table_async()`, `interpret_tables_async()`. Deterministic mapping is skipped when vision mode is enabled (garbled headers need LLM).
+
+**Concrete cases that are 100% deterministic**:
+- Russian DOCX — compound headers with ` / `, all header parts covered by aliases
+- ACEA PDF — hierarchical headers, all motorization types covered by aliases
+
+---
+
+### H10: Fallback Model Support
 
 **Problem**: Primary model might fail (rate limit, network, unavailable).
 

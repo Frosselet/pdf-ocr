@@ -109,6 +109,16 @@ def normalize_pipe_table(*args, **kwargs):
     from pdf_ocr.normalize import normalize_pipe_table as _normalize
     return _normalize(*args, **kwargs)
 
+def unpivot_pipe_table(*args, **kwargs):
+    """Detect and unpivot a pivoted pipe-table. Schema-agnostic."""
+    from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
+    return _unpivot(*args, **kwargs)
+
+def detect_pivot(*args, **kwargs):
+    """Detect pivot structure in a pipe-table without transforming."""
+    from pdf_ocr.unpivot import detect_pivot as _detect
+    return _detect(*args, **kwargs)
+
 # Unified extractors (auto-detect format, support both old and new formats)
 def extract_tables_from_excel(*args, **kwargs):
     """Extract tables from Excel files (XLSX or XLS).
@@ -198,6 +208,9 @@ __all__ = [
     "is_header_type_pattern",
     # Normalization
     "normalize_pipe_table",
+    # Unpivoting
+    "detect_pivot",
+    "unpivot_pipe_table",
     # Multi-format extractors (specific formats)
     "classify_tables",
     "classify_docx_tables",
