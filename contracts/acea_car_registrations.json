@@ -16,7 +16,7 @@
   "outputs": {
     "registrations_by_market": {
       "category": "registrations",
-      "filename": "car_registrations.parquet",
+      "filename": "car_registrations.csv",
       "schema": {
         "description": "New car registrations unpivoted by country and power source",
         "columns": [

@@ -309,16 +309,23 @@ async def _interpret_one(
 def save(
     results: list[DocumentResult],
     output_dir: str | Path = "outputs",
+    *,
+    filenames: dict[str, str] | None = None,
 ) -> tuple[dict[str, list[pd.DataFrame]], dict[str, Path]]:
-    """Merge DataFrames across documents and write each output to Parquet.
+    """Merge DataFrames across documents and write each output to file.
 
     Args:
         results: List of :class:`DocumentResult` from :func:`process_document_async`.
-        output_dir: Directory for output Parquet files (created if needed).
+        output_dir: Directory for output files (created if needed).
+        filenames: Optional mapping of output name → filename (e.g.
+            ``{"vessels": "shipping_stem.csv"}``).  The file extension determines
+            the format: ``.csv`` → CSV, ``.tsv`` → TSV, anything else → Parquet.
+            When *None* or when an output name has no entry, defaults to
+            ``{out_name}.parquet``.
 
     Returns:
         ``(merged, paths)`` — *merged* maps output name → list of DataFrames,
-        *paths* maps output name → written Parquet path.
+        *paths* maps output name → written file path.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -333,8 +340,14 @@ def save(
     paths: dict[str, Path] = {}
     for out_name, frames in merged.items():
         df = pd.concat(frames, ignore_index=True)
-        path = output_dir / f"{out_name}.parquet"
-        df.to_parquet(path, index=False)
+        fname = filenames.get(out_name, f"{out_name}.parquet") if filenames else f"{out_name}.parquet"
+        path = output_dir / fname
+        if path.suffix == ".csv":
+            df.to_csv(path, index=False)
+        elif path.suffix == ".tsv":
+            df.to_csv(path, index=False, sep="\t")
+        else:
+            df.to_parquet(path, index=False)
         paths[out_name] = path
         print(f"  {out_name}: {path} ({len(df)} rows)")
 
@@ -356,7 +369,7 @@ async def run_pipeline_async(
     Args:
         contract_path: Path to the JSON data contract.
         doc_paths: Paths to the documents to process.
-        output_dir: Directory for output Parquet files.
+        output_dir: Directory for output files (format driven by contract).
         refine_headers: Whether to refine PDF headers (passed through).
 
     Returns:
@@ -372,6 +385,7 @@ async def run_pipeline_async(
 
     print("PREPARE")
     cc = load_contract(contract_path)
+    filenames = {name: spec.filename for name, spec in cc.outputs.items() if spec.filename}
     print(f"  Contract: {cc.provider}, Model: {cc.model}, Outputs: {list(cc.outputs.keys())}")
 
     print("\nPROCESS (async — compress + classify + interpret per document)")
@@ -384,7 +398,7 @@ async def run_pipeline_async(
         print(f"  {Path(r.doc_path).name[:50]}: {cats} → {rows} records")
 
     print("\nSAVE")
-    merged, paths = save(results, output_dir)
+    merged, paths = save(results, output_dir, filenames=filenames)
 
     elapsed = time.perf_counter() - t0
     print(f"\nDone in {elapsed:.1f}s")

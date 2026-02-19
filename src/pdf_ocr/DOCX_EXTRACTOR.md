@@ -142,6 +142,8 @@ Result:        ["Region", "Area", "Area harvested / 2025", "Area harvested / 202
 
 **Forward-fill**: Empty cells in a header row (positions 3, 5, 7 above) inherit the preceding non-empty cell's text. This propagates the spanning parent's label to its child columns.
 
+**Boundary-aware forward-fill**: When `data_rows` is provided (the default in `compress_docx_table()`), the fill is constrained: it does **not** bleed from text index columns (leftmost contiguous text-data columns) into numeric data columns. Column classification uses `_classify_data_columns()`, which checks whether >50% of non-empty cells per column parse as numbers (via `_looks_numeric()`). This prevents a merged "Region" cell from polluting data column headers (e.g., `"Region / Final 2024"` becomes just `"Final 2024"`). Without `data_rows`, the original unrestricted fill behavior is preserved for backward compatibility.
+
 **Deduplication**: If the same value appears in multiple header rows for the same column (e.g., "Region" in both rows), it appears only once in the compound name.
 
 ---
@@ -419,7 +421,7 @@ Visual info feeds into `_analyze_visual_structure()` to identify header rows by 
 
 ### DOCX-level tests (`tests/test_docx_extractor.py`)
 
-98 regression tests covering the DOCX extraction and classification wrapper:
+117 regression tests covering the DOCX extraction and classification wrapper:
 
 | Test Group | Count | Verifies |
 | --- | --- | --- |
@@ -445,6 +447,10 @@ Visual info feeds into `_analyze_visual_structure()` to identify header rows by 
 | Word-boundary matching | 9 | Substring rejection, suffix tolerance, multi-word |
 | min_data_rows filtering | 1 | Small tables forced to "other" |
 | Similarity propagation | 4 | Category propagation, threshold, similarity math |
+| `_looks_numeric` | 6 | Integer, comma decimal, NBSP thousands, year, text, empty |
+| `_classify_data_columns` | 5 | Text/numeric, mixed, empty, all-numeric, year columns |
+| Boundary-aware forward-fill | 5 | Index boundary stop, data-column fill, backward compat, multi-index, no-index |
+| Boundary-aware integration | 1 | Region bleed prevented in `compress_docx_table` |
 
 ### Format-agnostic classification tests (`tests/test_classify.py`)
 

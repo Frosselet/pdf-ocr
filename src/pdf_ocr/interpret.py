@@ -1004,6 +1004,35 @@ def _normalize_for_alias_match(text: str) -> str:
     return s.strip()
 
 
+def _cell_is_numeric(value: str) -> bool:
+    """Return True if *value* parses as a numeric data cell.
+
+    Handles comma-decimal notation and NBSP/space thousand separators.
+    """
+    cleaned = value.replace(",", ".").replace("\u00a0", "").replace(" ", "")
+    if not cleaned:
+        return False
+    try:
+        float(cleaned)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_text_data_column(data_rows: list[list[str]], col_idx: int) -> bool:
+    """Return True if >50% of non-empty values in *col_idx* are non-numeric."""
+    non_empty = 0
+    text_count = 0
+    for row in data_rows:
+        val = (row[col_idx].strip() if col_idx < len(row) else "")
+        if not val:
+            continue
+        non_empty += 1
+        if not _cell_is_numeric(val):
+            text_count += 1
+    return non_empty > 0 and text_count / non_empty > 0.5
+
+
 _TITLE_RE = re.compile(r"^##\s+(.+)")
 _SECTION_LABEL_RE = re.compile(r"^\*\*(.+)\*\*$")
 _SEPARATOR_RE = re.compile(r"^\|[-| :]+\|$")
@@ -1230,6 +1259,11 @@ def _map_to_schema_deterministic(
     def _resolve_alias(part: str) -> list[ColumnDef]:
         """Resolve a header part to matching schema column(s)."""
         matches = alias_to_cols.get(_normalize_for_alias_match(part), [])
+        # Comma-suffix fallback: "Area harvested,Th.ha." → try "Area harvested"
+        if not matches and "," in part:
+            before_comma = part.split(",", 1)[0].strip()
+            if before_comma:
+                matches = alias_to_cols.get(_normalize_for_alias_match(before_comma), [])
         if len(matches) <= 1:
             return matches
         # Type-based disambiguation: when the same alias matches a dimension
@@ -1312,6 +1346,33 @@ def _map_to_schema_deterministic(
 
     if unmatched_parts:
         return None, unmatched_parts
+
+    # Phase 2.5: Blank-header text-column inference
+    # If exactly ONE column has a blank header with text data, AND exactly
+    # ONE string-type schema column has no header match → assign them.
+    blank_text_cols: list[int] = []
+    for hi, info in enumerate(group_info):
+        if not info["dimensions"] and not info["measures"]:
+            # Check if this column has a truly blank header
+            header = parsed.headers[hi] if hi < len(parsed.headers) else ""
+            if not header.strip() and parsed.data_rows and _is_text_data_column(parsed.data_rows, hi):
+                blank_text_cols.append(hi)
+    if len(blank_text_cols) == 1:
+        # Find string schema columns that have no match yet
+        matched_schema_names: set[str] = set()
+        for _info in group_info:
+            for col, _ in _info["dimensions"]:
+                matched_schema_names.add(col.name)
+            for _, col in _info["measures"]:
+                matched_schema_names.add(col.name)
+        for _, col in shared_cols:
+            matched_schema_names.add(col.name)
+        unmatched_string_cols = [
+            c for c in schema.columns
+            if c.type == "string" and c.name not in matched_schema_names
+        ]
+        if len(unmatched_string_cols) == 1:
+            shared_cols.append((blank_text_cols[0], unmatched_string_cols[0]))
 
     # Phase 3: Detect unpivot groups
     # Find dimension columns that appear with ≥2 distinct values across headers

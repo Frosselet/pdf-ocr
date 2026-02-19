@@ -97,7 +97,7 @@
             "name": "Area",
             "type": "float",
             "description": "MoA target area — the 'MOA Target YYYY' column in the source table",
-            "aliases": ["MOA Target {YYYY}"],
+            "aliases": ["MOA Target {YYYY}", "Area planted", "Target area"],
             "format": "#,##"
           },
           {

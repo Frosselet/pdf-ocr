@@ -25,6 +25,7 @@ from pdf_ocr.pipeline import (
     compress_and_classify_async,
     interpret_output_async,
     process_document_async,
+    save,
 )
 
 
@@ -391,3 +392,62 @@ class TestDocumentResult:
         """DocumentResult is importable from the top-level package."""
         from pdf_ocr import DocumentResult as DR
         assert DR is DocumentResult
+
+
+# ─── save ─────────────────────────────────────────────────────────────────────
+
+
+class TestSave:
+    """Tests for save() — merge and write output files."""
+
+    @staticmethod
+    def _make_result(out_name: str, df: pd.DataFrame) -> DocumentResult:
+        return DocumentResult(
+            doc_path="test.pdf",
+            report_date="",
+            compressed_by_category={},
+            dataframes={out_name: df},
+        )
+
+    def test_save_default_parquet(self, tmp_path):
+        """No filenames → Parquet fallback."""
+        df = pd.DataFrame({"a": [1, 2]})
+        results = [self._make_result("out", df)]
+        merged, paths = save(results, tmp_path)
+        assert paths["out"].suffix == ".parquet"
+        assert paths["out"].exists()
+        assert list(merged.keys()) == ["out"]
+
+    def test_save_with_csv_filename(self, tmp_path):
+        """.csv filename → CSV output."""
+        df = pd.DataFrame({"a": [1, 2]})
+        results = [self._make_result("out", df)]
+        merged, paths = save(results, tmp_path, filenames={"out": "data.csv"})
+        assert paths["out"].suffix == ".csv"
+        assert paths["out"].name == "data.csv"
+        assert paths["out"].exists()
+        # Verify it's actually CSV (readable as text)
+        content = paths["out"].read_text()
+        assert "a" in content  # header
+        assert "1" in content  # data
+
+    def test_save_with_tsv_filename(self, tmp_path):
+        """.tsv filename → TSV output."""
+        df = pd.DataFrame({"a": [1], "b": [2]})
+        results = [self._make_result("out", df)]
+        merged, paths = save(results, tmp_path, filenames={"out": "data.tsv"})
+        assert paths["out"].suffix == ".tsv"
+        content = paths["out"].read_text()
+        assert "\t" in content  # tab-separated
+
+    def test_save_merges_multiple_documents(self, tmp_path):
+        """DataFrames from multiple documents are concatenated."""
+        df1 = pd.DataFrame({"a": [1, 2]})
+        df2 = pd.DataFrame({"a": [3, 4]})
+        results = [self._make_result("out", df1), self._make_result("out", df2)]
+        merged, paths = save(results, tmp_path, filenames={"out": "merged.csv"})
+        assert len(merged["out"]) == 2  # two source frames
+        # Read back and verify row count
+        df_back = pd.read_csv(paths["out"])
+        assert len(df_back) == 4
+        assert list(df_back["a"]) == [1, 2, 3, 4]

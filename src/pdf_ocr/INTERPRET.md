@@ -283,9 +283,11 @@ _map_to_schema_deterministic()        ← alias matching, 5 phases
       └─ unmatched parts ────► fall through to LLM pipeline (H1-H8)
 ```
 
-**Phase 1 — Alias matching**: Split each header on ` / `, match parts against schema aliases (case-insensitive).
+**Phase 1 — Alias matching**: Split each header on ` / `, match parts against schema aliases (case-insensitive). Includes a **comma-suffix fallback**: when a full part has no alias match and contains a comma, the text before the first comma is tried (e.g., `"Area harvested,Th.ha."` → tries `"Area harvested"`). Only fires when the full string has zero matches — no false positives.
 
 **Phase 2 — Classification**: Dimension (`string`/`date` → value from header text) vs measure (`int`/`float` → value from cell). Single-part dimension columns → shared (cell-value). Compound label columns → last dimension is shared, earlier parts are constants.
+
+**Phase 2.5 — Blank-header text-column inference**: When exactly one column has a blank header with text data (>50% non-numeric cells), and exactly one string-type schema column has no header match, they are assigned as a shared column. The "exactly one of each" constraint prevents ambiguous assignments. Doesn't fire for numeric columns, partially-matched columns, or when multiple candidates exist.
 
 **Phase 3 — Unpivot group detection**: Dimension columns appearing with ≥2 distinct values across headers form group dimensions (e.g., `crop` has "spring crops" and "spring grain").
 

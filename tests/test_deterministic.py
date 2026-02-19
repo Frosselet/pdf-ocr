@@ -14,6 +14,8 @@ from pdf_ocr.interpret import (
     CanonicalSchema,
     ColumnDef,
     _DeterministicParsed,
+    _cell_is_numeric,
+    _is_text_data_column,
     _normalize_for_alias_match,
     _parse_pipe_table_deterministic,
     _parse_transposed_pipe_sections,
@@ -1110,3 +1112,196 @@ class TestTransposedStatusLabel:
         r1 = result.records[1].model_dump()
         assert r0.get("status") is None  # first vessel has empty status cell
         assert r1.get("status") == "Completed"
+
+
+# ─── TestCommaSuffixFallback ────────────────────────────────────────────────
+
+
+class TestCommaSuffixFallback:
+    """Tests for comma-suffix fallback in alias matching."""
+
+    def test_comma_unit_matches_base_alias(self) -> None:
+        """'Area harvested,Th.ha.' should match alias 'Area harvested'."""
+        parsed = _DeterministicParsed(
+            title=None,
+            headers=["Region", "Area harvested,Th.ha. / 2025", "Area harvested,Th.ha. / 2024"],
+            data_rows=[["Russia", "100", "90"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            ("metric", "string", "Metric", ["Area harvested"]),
+            ("value", "float", "Value", ["2025", "2024"]),
+            ("year", "int", "Year", ["2025", "2024"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert not unmatched
+        assert result is not None
+        assert len(result.records) == 2
+
+    def test_no_false_positive_when_before_comma_not_alias(self) -> None:
+        """'Revenue, domestic' with no alias for 'Revenue' → no fallback match."""
+        parsed = _DeterministicParsed(
+            title=None,
+            headers=["Revenue, domestic", "Cost"],
+            data_rows=[["100", "200"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("cost", "float", "Cost", ["Cost"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        # Should succeed (unmatched "Revenue, domestic" is just dropped)
+        assert not unmatched
+        assert result is not None
+
+    def test_full_string_takes_priority(self) -> None:
+        """If 'X,Y' itself is an alias, comma fallback should not fire."""
+        parsed = _DeterministicParsed(
+            title=None,
+            headers=["X,Y"],
+            data_rows=[["100"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("xy", "float", "XY", ["X,Y"]),
+            ("x", "float", "X", ["X"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert not unmatched
+        assert result is not None
+        # Should match "X,Y" exactly, not fall back to "X"
+        assert result.records[0].xy == "100"
+
+
+# ─── TestEmptyHeaderInference ──────────────────────────────────────────────
+
+
+class TestEmptyHeaderInference:
+    """Tests for blank-header text-column inference (Phase 2.5)."""
+
+    def test_single_blank_header_with_text_data(self) -> None:
+        """Blank header col with text data → assigned to unmatched string col."""
+        parsed = _DeterministicParsed(
+            title=None,
+            headers=["", "Value"],
+            data_rows=[["Russia", "100"], ["France", "200"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            ("value", "float", "Value", ["Value"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert not unmatched
+        assert result is not None
+        assert len(result.records) == 2
+        assert result.records[0].region == "Russia"
+        assert result.records[0].value == "100"
+
+    def test_no_inference_with_two_blank_headers(self) -> None:
+        """Two blank-header text columns → ambiguous, no inference."""
+        parsed = _DeterministicParsed(
+            title=None,
+            headers=["", "", "Value"],
+            data_rows=[["Russia", "Central", "100"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            ("district", "string", "District", ["District"]),
+            ("value", "float", "Value", ["Value"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        # Should still succeed (blank cols dropped), but no inference
+        assert result is not None
+        # Neither blank-header col gets assigned since there are 2
+        rec = result.records[0].model_dump()
+        assert rec.get("region") is None or rec.get("region") == ""
+
+    def test_no_inference_for_numeric_blank_header(self) -> None:
+        """Blank header col with numeric data → no inference."""
+        parsed = _DeterministicParsed(
+            title=None,
+            headers=["", "Name"],
+            data_rows=[["100", "Alice"], ["200", "Bob"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("score", "float", "Score", ["Score"]),
+            ("name", "string", "Name", ["Name"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        # Inference doesn't fire because col 0 is numeric
+        assert result is not None
+        rec = result.records[0].model_dump()
+        assert rec.get("score") is None or rec.get("score") == ""
+
+    def test_no_inference_with_multiple_unmatched_string_cols(self) -> None:
+        """One blank-header text col but two unmatched string cols → no inference."""
+        parsed = _DeterministicParsed(
+            title=None,
+            headers=["", "Value"],
+            data_rows=[["Russia", "100"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            ("district", "string", "District", ["District"]),
+            ("value", "float", "Value", ["Value"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert result is not None
+        # Inference doesn't fire since 2 string cols are unmatched
+        rec = result.records[0].model_dump()
+        assert rec.get("region") is None or rec.get("region") == ""
+
+
+# ─── TestCellIsNumeric and TestIsTextDataColumn ────────────────────────────
+
+
+class TestCellIsNumeric:
+    """Tests for _cell_is_numeric helper."""
+
+    def test_integer(self) -> None:
+        assert _cell_is_numeric("1234") is True
+
+    def test_comma_decimal(self) -> None:
+        assert _cell_is_numeric("1234,5") is True
+
+    def test_year_is_numeric(self) -> None:
+        """4-digit years are numeric — no year exclusion at cell level."""
+        assert _cell_is_numeric("2025") is True
+
+    def test_text(self) -> None:
+        assert _cell_is_numeric("Russia") is False
+
+    def test_empty(self) -> None:
+        assert _cell_is_numeric("") is False
+
+
+class TestIsTextDataColumn:
+    """Tests for _is_text_data_column helper."""
+
+    def test_text_column(self) -> None:
+        rows = [["Russia"], ["France"], ["Germany"]]
+        assert _is_text_data_column(rows, 0) is True
+
+    def test_numeric_column(self) -> None:
+        rows = [["100"], ["200"], ["300"]]
+        assert _is_text_data_column(rows, 0) is False
+
+    def test_empty_column(self) -> None:
+        rows = [[""], [""], [""]]
+        assert _is_text_data_column(rows, 0) is False
+
+    def test_mixed_mostly_text(self) -> None:
+        rows = [["Russia"], ["100"], ["France"]]
+        assert _is_text_data_column(rows, 0) is True

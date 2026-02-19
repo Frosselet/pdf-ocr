@@ -133,7 +133,7 @@ class TestLoadContract:
         assert isinstance(vessels, OutputSpec)
         assert vessels.name == "vessels"
         assert vessels.category == "shipping"
-        assert vessels.filename == "shipping_stem.parquet"
+        assert vessels.filename == "shipping_stem.csv"
         assert isinstance(vessels.schema, CanonicalSchema)
 
     def test_load_contract_report_date_config(self):

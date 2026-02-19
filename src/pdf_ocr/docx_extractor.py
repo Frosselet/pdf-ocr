@@ -273,6 +273,51 @@ def _build_grid_from_table(table: "Table") -> tuple[list[list[str]], list[list[D
     return grid, styles
 
 
+def _looks_numeric(value: str) -> bool:
+    """Return True if *value* parses as a numeric data cell.
+
+    Handles comma-decimal notation (``1234,5``) and NBSP/space thousand
+    separators.  Does NOT exclude 4-digit years — callers that need
+    year filtering (e.g. :func:`_is_header_like_row`) must do so
+    themselves.
+    """
+    cleaned = value.replace(",", ".").replace("\u00a0", "").replace(" ", "")
+    if not cleaned:
+        return False
+    try:
+        float(cleaned)
+        return True
+    except ValueError:
+        return False
+
+
+def _classify_data_columns(
+    data_rows: list[list[str]], num_cols: int
+) -> list[str]:
+    """Classify each column as ``"text"`` or ``"numeric"``.
+
+    A column is ``"numeric"`` when >50 % of its non-empty cells parse as
+    numbers (via :func:`_looks_numeric`).  Columns with no non-empty cells
+    default to ``"numeric"`` (conservative — prevents false index detection).
+    """
+    result: list[str] = []
+    for ci in range(num_cols):
+        non_empty = 0
+        numeric = 0
+        for row in data_rows:
+            val = (row[ci].strip() if ci < len(row) else "")
+            if not val:
+                continue
+            non_empty += 1
+            if _looks_numeric(val):
+                numeric += 1
+        if non_empty == 0:
+            result.append("numeric")
+        else:
+            result.append("numeric" if numeric / non_empty > 0.5 else "text")
+    return result
+
+
 def _is_header_like_row(row: list[str]) -> bool:
     """Check if a row looks like a sub-header (mostly text, not data).
 
@@ -287,15 +332,12 @@ def _is_header_like_row(row: list[str]) -> bool:
         return False
     numeric_count = 0
     for cell in non_empty:
-        cleaned = cell.replace(",", ".").replace("\u00a0", "").replace(" ", "")
-        try:
-            float(cleaned)
+        if _looks_numeric(cell):
             # 4-digit integers are likely year labels, not data
+            cleaned = cell.replace(",", ".").replace("\u00a0", "").replace(" ", "")
             if len(cleaned) == 4 and cleaned.isdigit():
                 continue
             numeric_count += 1
-        except ValueError:
-            pass
     return numeric_count / len(non_empty) < 0.5
 
 
@@ -349,6 +391,7 @@ def _build_compound_headers(
     header_rows: list[list[str]],
     *,
     title_row: str | None = None,
+    data_rows: list[list[str]] | None = None,
 ) -> list[str]:
     """Stack header rows into compound column names joined by " / ".
 
@@ -356,9 +399,15 @@ def _build_compound_headers(
     Empty cells in a row that are part of a horizontal span inherit the
     preceding non-empty cell's text (forward-fill within each row).
 
+    When *data_rows* is provided, the forward-fill is **boundary-aware**:
+    fill does not bleed from text index columns (leftmost contiguous text
+    columns) into numeric data columns.  This prevents a merged "Region"
+    cell from polluting data column headers.
+
     Args:
         header_rows: List of rows (each a list of cell strings).
         title_row: Optional title text prepended to all headers.
+        data_rows: Optional data rows used to classify columns.
 
     Returns:
         List of compound header strings, one per column.
@@ -370,18 +419,34 @@ def _build_compound_headers(
     if num_cols == 0:
         return []
 
+    # Identify index columns: leftmost contiguous text-data columns
+    index_cols: set[int] = set()
+    if data_rows is not None:
+        col_types = _classify_data_columns(data_rows, num_cols)
+        for ci in range(num_cols):
+            if col_types[ci] == "text":
+                index_cols.add(ci)
+            else:
+                break
+
     # Forward-fill each header row: empty cells inherit preceding non-empty
     filled_rows: list[list[str]] = []
     for row in header_rows:
         filled: list[str] = []
         last_nonempty = ""
+        source_col = -1
         for i in range(num_cols):
             val = row[i].strip() if i < len(row) else ""
             if val:
                 last_nonempty = val
+                source_col = i
                 filled.append(val)
             else:
-                filled.append(last_nonempty)
+                # Stop fill that crosses text index → numeric data boundary
+                if source_col in index_cols and i not in index_cols:
+                    filled.append("")
+                else:
+                    filled.append(last_nonempty)
         filled_rows.append(filled)
 
     # Stack columns vertically
@@ -718,7 +783,7 @@ def compress_docx_table(
     data_rows = raw_grid[header_row_count:]
 
     # Build compound headers
-    headers = _build_compound_headers(header_rows)
+    headers = _build_compound_headers(header_rows, data_rows=data_rows)
     if not headers:
         return ""
 

@@ -17,7 +17,9 @@ from pdf_ocr.classify import _compute_similarity, _keyword_matches
 from pdf_ocr.docx_extractor import (
     _build_compound_headers,
     _build_grid_from_table,
+    _classify_data_columns,
     _detect_header_rows_from_merges,
+    _looks_numeric,
     classify_docx_tables,
     compress_docx_table,
     compress_docx_tables,
@@ -1046,3 +1048,169 @@ class TestSimilarityPropagation:
             8.0, {"region", "area", "harvested", "yield"},
         )
         assert sim < 0.3
+
+
+# ---------------------------------------------------------------------------
+# 16. _looks_numeric()
+# ---------------------------------------------------------------------------
+
+
+class TestLooksNumeric:
+    """Tests for the _looks_numeric helper."""
+
+    def test_integer(self) -> None:
+        assert _looks_numeric("1234") is True
+
+    def test_comma_decimal(self) -> None:
+        assert _looks_numeric("1234,5") is True
+
+    def test_nbsp_thousands(self) -> None:
+        assert _looks_numeric("1\u00a0234") is True
+
+    def test_four_digit_year(self) -> None:
+        """4-digit years ARE numeric — year exclusion is _is_header_like_row's job."""
+        assert _looks_numeric("2025") is True
+
+    def test_plain_text(self) -> None:
+        assert _looks_numeric("Russia") is False
+
+    def test_empty_string(self) -> None:
+        assert _looks_numeric("") is False
+
+
+# ---------------------------------------------------------------------------
+# 17. _classify_data_columns()
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyDataColumns:
+    """Tests for column classification."""
+
+    def test_text_and_numeric(self) -> None:
+        rows = [["Russia", "100"], ["France", "200"]]
+        types = _classify_data_columns(rows, 2)
+        assert types == ["text", "numeric"]
+
+    def test_mixed_column(self) -> None:
+        rows = [["abc", "100"], ["def", "xyz"], ["ghi", "300"]]
+        types = _classify_data_columns(rows, 2)
+        assert types[0] == "text"
+        # col 1: 2 of 3 numeric → numeric
+        assert types[1] == "numeric"
+
+    def test_empty_column_defaults_numeric(self) -> None:
+        rows = [["Russia", ""], ["France", ""]]
+        types = _classify_data_columns(rows, 2)
+        assert types[0] == "text"
+        assert types[1] == "numeric"
+
+    def test_all_numeric(self) -> None:
+        rows = [["100", "200"], ["300", "400"]]
+        types = _classify_data_columns(rows, 2)
+        assert types == ["numeric", "numeric"]
+
+    def test_year_columns_are_numeric(self) -> None:
+        """4-digit years parse as numeric (year exclusion is header-level)."""
+        rows = [["2024", "100"], ["2025", "200"]]
+        types = _classify_data_columns(rows, 2)
+        assert types[0] == "numeric"
+        assert types[1] == "numeric"
+
+
+# ---------------------------------------------------------------------------
+# 18. Boundary-aware forward-fill in _build_compound_headers
+# ---------------------------------------------------------------------------
+
+
+class TestBoundaryAwareForwardFill:
+    """Tests for boundary-aware forward-fill with data_rows."""
+
+    def test_fill_stops_at_index_boundary(self) -> None:
+        """Merged 'Region' cell must not bleed into numeric data columns."""
+        header_rows = [
+            ["Region", "", "", "spring crops", ""],
+            ["", "", "", "MOA Target 2025", "2025"],
+        ]
+        data_rows = [
+            ["Russia", "500", "600", "100", "90"],
+            ["France", "400", "300", "80", "70"],
+        ]
+        headers = _build_compound_headers(header_rows, data_rows=data_rows)
+        # Col 0: "Region" — text index column
+        assert headers[0] == "Region"
+        # Col 1-2: forward-fill from col 0 STOPS at boundary
+        assert headers[1] == ""
+        assert headers[2] == ""
+        # Col 3-4: normal forward-fill within data columns
+        assert headers[3] == "spring crops / MOA Target 2025"
+        assert headers[4] == "spring crops / 2025"
+
+    def test_fill_continues_within_data_columns(self) -> None:
+        """Forward-fill within data columns should work normally."""
+        header_rows = [["Region", "Metric A", "", "Metric B", ""]]
+        data_rows = [["Russia", "100", "200", "300", "400"]]
+        headers = _build_compound_headers(header_rows, data_rows=data_rows)
+        assert headers[0] == "Region"
+        assert headers[1] == "Metric A"
+        assert headers[2] == "Metric A"  # fill within data cols
+        assert headers[3] == "Metric B"
+        assert headers[4] == "Metric B"
+
+    def test_backward_compat_without_data_rows(self) -> None:
+        """Without data_rows, behavior is unchanged (no boundary check)."""
+        header_rows = [["Region", "", "", "Metric A", ""]]
+        headers = _build_compound_headers(header_rows)
+        assert headers[0] == "Region"
+        assert headers[1] == "Region"  # old behavior: fills freely
+        assert headers[2] == "Region"
+        assert headers[3] == "Metric A"
+        assert headers[4] == "Metric A"
+
+    def test_multiple_text_index_columns(self) -> None:
+        """Multiple contiguous text columns treated as index."""
+        header_rows = [["Region", "SubRegion", "", "Value", ""]]
+        data_rows = [["Russia", "Central", "500", "100", "200"]]
+        headers = _build_compound_headers(header_rows, data_rows=data_rows)
+        assert headers[0] == "Region"
+        assert headers[1] == "SubRegion"
+        # Col 2: first numeric column → SubRegion fill stops at boundary
+        assert headers[2] == ""
+        assert headers[3] == "Value"
+        assert headers[4] == "Value"
+
+    def test_no_index_columns(self) -> None:
+        """All numeric data → no boundary, fill continues normally."""
+        header_rows = [["Total", "", "Other", ""]]
+        data_rows = [["100", "200", "300", "400"]]
+        headers = _build_compound_headers(header_rows, data_rows=data_rows)
+        assert headers[0] == "Total"
+        assert headers[1] == "Total"
+        assert headers[2] == "Other"
+        assert headers[3] == "Other"
+
+
+# ---------------------------------------------------------------------------
+# 19. Integration: compress_docx_table with boundary-aware fill
+# ---------------------------------------------------------------------------
+
+
+class TestCompressDocxTableBoundaryFill:
+    """Integration test: compress_docx_table uses boundary-aware fill."""
+
+    def test_region_bleed_prevented(self) -> None:
+        """Region merged cell must not appear in data column headers."""
+        grid = [
+            ["Region", "", "", "spring crops", ""],
+            ["", "", "", "MOA Target 2025", "2025"],
+            ["Russia", "500", "600", "100", "90"],
+        ]
+        md = compress_docx_table(grid, header_row_count=2)
+        header_line = md.split("\n")[0]
+        # Region should only appear once (col 0), not bleeding into cols 1-2
+        assert "Region" in header_line
+        assert "spring crops / MOA Target 2025" in header_line
+        assert "spring crops / 2025" in header_line
+        # Count occurrences of "Region" — should appear only in col 0
+        cells = [c.strip() for c in header_line.split("|") if c.strip()]
+        region_cells = [c for c in cells if "Region" in c]
+        assert len(region_cells) == 1

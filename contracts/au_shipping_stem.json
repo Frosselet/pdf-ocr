@@ -16,7 +16,7 @@
   "outputs": {
     "vessels": {
       "category": "shipping",
-      "filename": "shipping_stem.parquet",
+      "filename": "shipping_stem.csv",
       "schema": {
         "description": "Vessel loading records by port — unified across 6 Australian providers",
         "columns": [
