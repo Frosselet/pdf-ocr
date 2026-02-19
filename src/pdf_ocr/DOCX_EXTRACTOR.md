@@ -30,7 +30,8 @@ DOCX file
   |
   v
 3. Detect title row
-   -- single non-empty cell in row 0 = title
+   -- single non-empty cell in row 0 = in-table title
+   -- fallback: preceding paragraph in DOCX body = pre-table title
   |
   v
 4. Build compound headers (_build_compound_headers)

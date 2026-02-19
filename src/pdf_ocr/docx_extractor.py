@@ -858,6 +858,30 @@ def compress_docx_tables(
     doc = Document(path)
     results: list[tuple[str, dict]] = []
 
+    # Build map: table XML element → preceding paragraph text.
+    # When a table has no in-table title row, the paragraph immediately
+    # before it in the DOCX body can serve as its title (e.g., "Winter
+    # sowing of grains and grasses" before a planting table).
+    from docx.oxml.ns import qn as _qn
+
+    pre_table_text: dict[int, str] = {}  # id(tbl_element) → text
+    body_children = list(doc.element.body)
+    for i, el in enumerate(body_children):
+        if el.tag.endswith("}tbl"):
+            for j in range(i - 1, -1, -1):
+                prev = body_children[j]
+                if prev.tag.endswith("}p"):
+                    text = "".join(
+                        (t.text or "")
+                        for t in prev.findall(".//" + _qn("w:t"))
+                    ).strip()
+                    if text:
+                        pre_table_text[id(el)] = text
+                        break
+                    # skip empty paragraphs
+                else:
+                    break  # hit another table or non-paragraph element
+
     for table_idx, table in enumerate(doc.tables):
         if table_indices is not None and table_idx not in table_indices:
             continue
@@ -890,6 +914,13 @@ def compress_docx_tables(
             title = non_empty[0]
             grid = grid[1:]  # remove title row from grid
             header_count -= 1
+
+        # Fallback: use the preceding paragraph as title when no in-table
+        # title was found.  The paragraph text is just metadata — Phase 2.3
+        # in the deterministic mapper only acts on it if it matches a schema
+        # alias, so false-positive titles are harmless.
+        if title is None:
+            title = pre_table_text.get(id(table._element))
 
         data_row_count = len(grid) - header_count
 

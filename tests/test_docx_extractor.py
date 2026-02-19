@@ -479,13 +479,13 @@ _TEST_CATEGORIES = {
 
 # Expected classification per file
 EXPECTED_CLASSIFICATIONS: dict[str, dict[str, int]] = {
-    "Apr 21": {"export": 2, "other": 1},
-    "April 25": {"export": 1, "other": 1, "planting": 7},
-    "May": {"export": 1, "other": 2},
-    "June": {"export": 1, "other": 3, "planting": 8},
-    "July": {"export": 1, "harvest": 4, "other": 2},
-    "September": {"export": 2, "harvest": 8, "other": 4},
-    "Nov": {"export": 1, "harvest": 9, "other": 3, "planting": 1},
+    "Apr 21": {"export": 3},
+    "April 25": {"export": 2, "planting": 7},
+    "May": {"export": 3},
+    "June": {"export": 2, "other": 2, "planting": 8},
+    "July": {"export": 2, "harvest": 4, "other": 1},
+    "September": {"export": 4, "harvest": 8, "other": 2},
+    "Nov": {"export": 2, "harvest": 9, "other": 2, "planting": 1},
 }
 
 

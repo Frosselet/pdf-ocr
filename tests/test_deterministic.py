@@ -175,6 +175,46 @@ class TestMapToSchema:
         result, unmatched = _map_to_schema_deterministic(parsed, schema)
         assert result is None
 
+    def test_joined_form_fallback(self) -> None:
+        """Stacked header parts joined when individually unmatched."""
+        parsed = _DeterministicParsed(
+            title=None,
+            headers=["Port", "Quantity / (tonnes)"],
+            data_rows=[["Newcastle", "26914"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("port", "string", "Port", ["Port"]),
+            ("tons", "int", "Tonnes", ["Quantity (tonnes)"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert not unmatched
+        assert result is not None
+        assert result.records[0].tons == "26914"
+
+    def test_joined_form_not_used_when_parts_match(self) -> None:
+        """Joined form only tried when ALL parts are unmatched."""
+        parsed = _DeterministicParsed(
+            title=None,
+            headers=["Region", "spring wheat / Value", "spring barley / Value"],
+            data_rows=[["Russia", "100", "200"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            ("crop", "string", "Crop", ["spring wheat", "spring barley"]),
+            ("value", "float", "Value", ["Value"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert not unmatched
+        assert result is not None
+        # Parts match individually — joined form NOT used, pivot works
+        crops = [r.crop for r in result.records]
+        assert "spring wheat" in crops
+        assert "spring barley" in crops
+
     def test_case_insensitive_aliases(self) -> None:
         """Alias matching is case-insensitive."""
         parsed = _DeterministicParsed(
@@ -1262,6 +1302,182 @@ class TestEmptyHeaderInference:
         # Inference doesn't fire since 2 string cols are unmatched
         rec = result.records[0].model_dump()
         assert rec.get("region") is None or rec.get("region") == ""
+
+
+# ─── TestTitleToSchemaMatching ─────────────────────────────────────────────
+
+
+class TestTitleToSchemaMatching:
+    """Tests for Phase 2.3: title-to-schema matching."""
+
+    def test_title_matches_string_alias(self) -> None:
+        """Title matching a schema alias → constant dimension for all records."""
+        parsed = _DeterministicParsed(
+            title="RICE",
+            headers=["Region", "Value"],
+            data_rows=[["Russia", "100"], ["France", "200"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            ("crop", "string", "Crop", ["rice", "wheat"]),
+            ("value", "float", "Value", ["Value"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert not unmatched
+        assert result is not None
+        assert len(result.records) == 2
+        assert result.records[0].crop == "RICE"
+        assert result.records[1].crop == "RICE"
+        assert result.records[0].region == "Russia"
+
+    def test_title_enables_blank_header_inference(self) -> None:
+        """Title resolves one string col → Phase 2.5 can infer the other."""
+        parsed = _DeterministicParsed(
+            title="RICE",
+            headers=["", "Target 2025", "2025"],
+            data_rows=[["Russia", "500", "400"], ["France", "300", "250"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            ("crop", "string", "Crop", ["rice", "wheat"]),
+            ("area", "float", "Target area", ["Target 2025"]),
+            ("value", "float", "Value", ["2025"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert not unmatched
+        assert result is not None
+        assert len(result.records) == 2
+        # Title resolves crop, Phase 2.5 resolves region from blank header
+        assert result.records[0].crop == "RICE"
+        assert result.records[0].region == "Russia"
+        assert result.records[1].region == "France"
+
+    def test_title_no_match(self) -> None:
+        """Title with no alias match → no effect."""
+        parsed = _DeterministicParsed(
+            title="Summary Report",
+            headers=["Region", "Value"],
+            data_rows=[["Russia", "100"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            ("value", "float", "Value", ["Value"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert not unmatched
+        assert result is not None
+        # No crop column assigned since title doesn't match any alias
+        rec = result.records[0].model_dump()
+        assert rec.get("crop") is None
+
+    def test_title_not_used_when_header_already_matches(self) -> None:
+        """Title not used when the column is already matched from headers."""
+        parsed = _DeterministicParsed(
+            title="corn",
+            headers=["Region", "rice / Value", "wheat / Value"],
+            data_rows=[["Russia", "100", "200"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            ("crop", "string", "Crop", ["rice", "wheat", "corn"]),
+            ("value", "float", "Value", ["Value"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert not unmatched
+        assert result is not None
+        # Crop comes from headers "rice" and "wheat" (pivot groups), not title "corn"
+        crop_values = [r.crop for r in result.records]
+        assert "rice" in crop_values
+        assert "wheat" in crop_values
+        assert "corn" not in crop_values
+
+    def test_title_case_insensitive(self) -> None:
+        """Title matching is case-insensitive via alias normalization."""
+        parsed = _DeterministicParsed(
+            title="SUNFLOWER",
+            headers=["Region", "Value"],
+            data_rows=[["Russia", "100"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            ("crop", "string", "Crop", ["sunflower"]),
+            ("value", "float", "Value", ["Value"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert not unmatched
+        assert result is not None
+        assert result.records[0].crop == "SUNFLOWER"
+
+    def test_title_substring_match(self) -> None:
+        """Alias as word-boundary substring of title → match."""
+        parsed = _DeterministicParsed(
+            title="Winter sowing of grains and grasses",
+            headers=["Region", "Value"],
+            data_rows=[["Russia", "100"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            ("crop", "string", "Crop", ["grains and grasses", "wheat"]),
+            ("value", "float", "Value", ["Value"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert not unmatched
+        assert result is not None
+        assert result.records[0].crop == "Winter sowing of grains and grasses"
+
+    def test_title_substring_no_partial_word(self) -> None:
+        """Alias must match at word boundaries — no partial word matches."""
+        parsed = _DeterministicParsed(
+            title="Export price analysis",
+            headers=["Region", "Value"],
+            data_rows=[["Russia", "100"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            # "port" is a substring of "Export" but not at word boundary
+            ("location", "string", "Port", ["port"]),
+            ("value", "float", "Value", ["Value"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert result is not None
+        rec = result.records[0].model_dump()
+        assert rec.get("location") is None
+
+    def test_title_substring_ambiguous(self) -> None:
+        """Two aliases match as substrings → ambiguous, no match."""
+        parsed = _DeterministicParsed(
+            title="Spring sowing of wheat and barley",
+            headers=["Region", "Value"],
+            data_rows=[["Russia", "100"]],
+            sections=[],
+            aggregation_rows=[],
+        )
+        schema = _schema(
+            ("region", "string", "Region", ["Region"]),
+            ("crop", "string", "Crop", ["wheat"]),
+            ("grain", "string", "Grain type", ["barley"]),
+            ("value", "float", "Value", ["Value"]),
+        )
+        result, unmatched = _map_to_schema_deterministic(parsed, schema)
+        assert result is not None
+        rec = result.records[0].model_dump()
+        # Two different string columns match → ambiguous → no assignment
+        assert rec.get("crop") is None
+        assert rec.get("grain") is None
 
 
 # ─── TestCellIsNumeric and TestIsTextDataColumn ────────────────────────────

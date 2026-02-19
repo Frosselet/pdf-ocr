@@ -331,7 +331,8 @@ Each heuristic encodes a human inference pattern. The table shows: what humans d
 | "Same columns, different layout per section" | Re-header column remapping | Match named cells between section re-header and global header |
 | "That header text matches despite formatting" | Alias normalization | Case, whitespace, paren spacing, quote stripping via `_normalize_for_alias_match()` |
 | "Strip the unit after the comma" | Comma-suffix fallback | `"Area harvested,Th.ha."` → try `"Area harvested"` when full string has no match |
-| "Blank header but clearly text data" | Blank-header inference | Assign blank-header text-data column to lone unmatched string schema column |
+| "The table title IS the crop name" | Title-to-schema matching | Table title (in-table row or preceding paragraph) matched against schema aliases with word-boundary substring fallback → constant dimension for all records |
+| "Blank header but clearly text data" | Blank-header inference | Assign blank-header text-data column to lone unmatched string schema column (accounts for title-matched columns) |
 | "Merged cell shouldn't bleed into data" | Boundary-aware forward-fill | Stop header forward-fill at text-index → numeric-data column boundary |
 | "Section header is the port name" | Section-to-schema mapping | Section labels matched against schema column aliases |
 | "This is a pivot table" | Table type classification | Structural pattern matching |

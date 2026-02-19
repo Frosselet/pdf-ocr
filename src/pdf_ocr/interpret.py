@@ -1292,6 +1292,17 @@ def _map_to_schema_deterministic(
         col_parts: list[tuple[str, list[ColumnDef]]] = []
         for part in parts:
             col_parts.append((part, _resolve_alias(part)))
+
+        # Joined-form fallback: when ALL parts are individually unmatched,
+        # try the space-joined form.  Handles stacked headers where the full
+        # name was split across rows (e.g., "Quantity / (tonnes)" → joined
+        # form "Quantity (tonnes)" matches the alias).
+        if len(parts) > 1 and all(not matched for _, matched in col_parts):
+            joined = " ".join(parts)
+            joined_matches = _resolve_alias(joined)
+            if joined_matches:
+                col_parts = [(joined, joined_matches)]
+
         header_mappings.append(col_parts)
 
     # Phase 2: Classify columns — dimension vs measure
@@ -1347,6 +1358,50 @@ def _map_to_schema_deterministic(
     if unmatched_parts:
         return None, unmatched_parts
 
+    # Phase 2.3: Title-to-schema matching
+    # When the table title matches a string-type schema column's alias,
+    # assign it as a constant dimension (applies to all records).
+    # Example: title "RICE" matches Crop alias "rice" → Crop="RICE" for all rows.
+    # Falls back to word-boundary substring matching when the full title
+    # doesn't match (e.g., title "Winter sowing of grains and grasses"
+    # contains alias "grains and grasses").
+    title_dims: list[tuple[ColumnDef, str]] = []
+    if parsed.title:
+        title_matches = _resolve_alias(parsed.title)
+        title_string_matches = [c for c in title_matches if c.type in DIMENSION_TYPES]
+
+        # Substring fallback: if full title doesn't match, check if any
+        # string-type alias appears as a word-boundary substring within the
+        # title.  Requires exactly one matching column (ambiguity → skip).
+        if not title_string_matches:
+            import re as _re
+
+            title_norm = _normalize_for_alias_match(parsed.title)
+            substring_candidates: list[ColumnDef] = []
+            for alias_norm, cols in alias_to_cols.items():
+                if len(alias_norm) < 3:
+                    continue  # skip trivially short aliases
+                pattern = r"\b" + _re.escape(alias_norm) + r"\b"
+                if _re.search(pattern, title_norm):
+                    for c in cols:
+                        if c.type in DIMENSION_TYPES and c not in substring_candidates:
+                            substring_candidates.append(c)
+            if len(substring_candidates) == 1:
+                title_string_matches = substring_candidates
+
+        if len(title_string_matches) == 1:
+            # Verify the column isn't already matched by headers
+            already_matched: set[str] = set()
+            for _info in group_info:
+                for col, _ in _info["dimensions"]:
+                    already_matched.add(col.name)
+                for _, col in _info["measures"]:
+                    already_matched.add(col.name)
+            for _, col in shared_cols:
+                already_matched.add(col.name)
+            if title_string_matches[0].name not in already_matched:
+                title_dims.append((title_string_matches[0], parsed.title))
+
     # Phase 2.5: Blank-header text-column inference
     # If exactly ONE column has a blank header with text data, AND exactly
     # ONE string-type schema column has no header match → assign them.
@@ -1366,6 +1421,9 @@ def _map_to_schema_deterministic(
             for _, col in _info["measures"]:
                 matched_schema_names.add(col.name)
         for _, col in shared_cols:
+            matched_schema_names.add(col.name)
+        # Include title-matched columns as matched
+        for col, _ in title_dims:
             matched_schema_names.add(col.name)
         unmatched_string_cols = [
             c for c in schema.columns
@@ -1401,6 +1459,11 @@ def _map_to_schema_deterministic(
             col_def = next(c for c in schema.columns if c.name == col_name)
             value = next(iter(unique_values))
             constant_dims.append((col_def, value))
+
+    # Add title-matched dimensions (from Phase 2.3) to constant_dims
+    for td_col, td_val in title_dims:
+        if not any(cd.name == td_col.name for cd, _ in constant_dims):
+            constant_dims.append((td_col, td_val))
 
     # Re-classify compound label columns that contain non-group dimensions.
     # For compound header columns with only non-group dimensions and no measures
@@ -1542,6 +1605,8 @@ def _map_to_schema_deterministic(
             source = "cell value (shared column)"
         elif col.name in group_dim_names:
             source = "header text (unpivot dimension)"
+        elif any(col.name == tc.name for tc, _ in title_dims):
+            source = "table title"
         elif section_col and col.name == section_col.name:
             source = "section label"
 

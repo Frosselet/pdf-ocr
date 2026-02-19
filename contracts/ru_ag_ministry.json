@@ -113,7 +113,8 @@
             "description": "Crop name — the group prefix in compound headers (e.g. 'SUNFLOWER' from 'SUNFLOWER / MOA Target 2025')",
             "aliases": [
               "spring crops", "spring grain", "spring wheat", "spring barley",
-              "corn", "rice", "buckwheat", "sunflower", "soya", "rape"
+              "corn", "rice", "buckwheat", "sunflower", "soya", "rape",
+              "grains and grasses"
             ],
             "format": "lowercase"
           },
