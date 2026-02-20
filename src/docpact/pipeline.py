@@ -13,7 +13,7 @@ Four composable async helpers layered from granular to convenient:
 
 Usage::
 
-    from pdf_ocr.pipeline import run_pipeline_async
+    from docpact.pipeline import run_pipeline_async
 
     results, merged, paths, elapsed = await run_pipeline_async(
         "contracts/au_shipping_stem.json",
@@ -22,8 +22,8 @@ Usage::
 
 Or use the lower-level helpers directly::
 
-    from pdf_ocr.contracts import load_contract
-    from pdf_ocr.pipeline import process_document_async
+    from docpact.contracts import load_contract
+    from docpact.pipeline import process_document_async
 
     cc = load_contract("contracts/au_shipping_stem.json")
     result = await process_document_async("inputs/2857439.pdf", cc)
@@ -40,7 +40,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from pdf_ocr.contracts import (
+from docpact.contracts import (
     ContractContext,
     OutputSpec,
     _YEAR_TEMPLATE_RE,
@@ -48,14 +48,14 @@ from pdf_ocr.contracts import (
     format_dataframe,
     resolve_year_templates,
 )
-from pdf_ocr.interpret import (
+from docpact.interpret import (
     CanonicalSchema,
     UnpivotStrategy,
     _interpret_pages_batched_async,
     _split_pages,
 )
-from pdf_ocr.report_date import resolve_report_date
-from pdf_ocr.serialize import to_pandas
+from docpact.report_date import resolve_report_date
+from docpact.serialize import to_pandas
 
 
 # ─── Result type ─────────────────────────────────────────────────────────────
@@ -99,9 +99,9 @@ async def compress_and_classify_async(
         ``{output_name: compressed_data}`` where values are ``str``
         (PDF pipe-table text) or ``list[tuple[str, dict]]`` (DOCX).
     """
-    from pdf_ocr.classify import classify_tables
-    from pdf_ocr.compress import compress_spatial_text, compress_spatial_text_structured
-    from pdf_ocr.docx_extractor import (
+    from docpact.classify import classify_tables
+    from docpact.compress import compress_spatial_text, compress_spatial_text_structured
+    from docpact.docx_extractor import (
         classify_docx_tables,
         compress_docx_tables,
     )
@@ -253,7 +253,7 @@ async def process_document_async(
     # Extract pivot years for DOCX (PDF: not yet implemented)
     is_docx = doc_path.lower().endswith((".docx", ".doc"))
     if is_docx:
-        from pdf_ocr.docx_extractor import extract_pivot_values
+        from docpact.docx_extractor import extract_pivot_values
 
         all_years: set[str] = set()
         for data in compressed_by_category.values():
@@ -379,7 +379,7 @@ async def run_pipeline_async(
     """
     import time
 
-    from pdf_ocr.contracts import load_contract
+    from docpact.contracts import load_contract
 
     t0 = time.perf_counter()
 

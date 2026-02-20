@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pdf_ocr.heuristics import (
+from docpact.heuristics import (
     StructuredTable,
     TableMetadata,
     build_column_names_from_headers,
@@ -460,7 +460,7 @@ def extract_tables_from_pptx(
     except ImportError as e:
         raise ImportError(
             "python-pptx is required for PPTX extraction. "
-            "Install with: pip install pdf-ocr[pptx]"
+            "Install with: pip install docpact[pptx]"
         ) from e
 
     path = Path(pptx_path)

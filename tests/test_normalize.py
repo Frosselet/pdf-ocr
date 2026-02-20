@@ -1,6 +1,6 @@
-"""Tests for pdf_ocr.normalize — centralized pipe-table text normalization."""
+"""Tests for docpact.normalize — centralized pipe-table text normalization."""
 
-from pdf_ocr.normalize import normalize_pipe_table
+from docpact.normalize import normalize_pipe_table
 
 
 # ---------------------------------------------------------------------------

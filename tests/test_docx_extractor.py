@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from pdf_ocr.classify import _compute_similarity, _keyword_matches
-from pdf_ocr.docx_extractor import (
+from docpact.classify import _compute_similarity, _keyword_matches
+from docpact.docx_extractor import (
     _build_compound_headers,
     _build_grid_from_table,
     _classify_data_columns,

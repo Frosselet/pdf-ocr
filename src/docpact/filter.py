@@ -13,8 +13,8 @@ from pathlib import Path
 import fitz  # PyMuPDF
 from rapidfuzz import fuzz
 
-from pdf_ocr.compress import RegionType, _classify_regions
-from pdf_ocr.spatial_text import _extract_page_layout, _open_pdf
+from docpact.compress import RegionType, _classify_regions
+from docpact.spatial_text import _extract_page_layout, _open_pdf
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-# pdf-ocr
+# docpact
 
 **Structured data extraction from human-formatted documents.**
 
@@ -13,7 +13,7 @@ The design philosophy, its evolution, and how it fits into the broader landscape
 
 ## What's Inside
 
-This is a Python library (`src/pdf_ocr/`) with a multi-stage pipeline:
+This is a Python library (`src/docpact/`) with a multi-stage pipeline:
 
 ```
 Document (PDF / DOCX / XLSX / PPTX / HTML)
@@ -29,4 +29,4 @@ Document (PDF / DOCX / XLSX / PPTX / HTML)
 
 Orchestration is contract-driven via `pipeline.py`: load a contract, point it at documents, get structured output. See the [notebooks](pipeline.ipynb) for end-to-end examples.
 
-**Full technical documentation, API reference, and heuristics catalog:** [src/pdf_ocr/README.md](src/pdf_ocr/README.md)
+**Full technical documentation, API reference, and heuristics catalog:** [src/docpact/README.md](src/docpact/README.md)

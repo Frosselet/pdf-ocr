@@ -167,7 +167,7 @@ Result:        ["Region", "Area", "Area harvested / 2025", "Area harvested / 202
 
 ```python
 # DOCX-specific (thin wrapper)
-from pdf_ocr import classify_docx_tables
+from docpact import classify_docx_tables
 categories = {
     "harvest": ["area harvested", "yield", "collected"],
     "export": ["export", "shipment", "fob"],
@@ -175,12 +175,12 @@ categories = {
 classes = classify_docx_tables("report.docx", categories)
 
 # Format-agnostic (works with any compressed tables)
-from pdf_ocr import classify_tables, compress_docx_tables
+from docpact import classify_tables, compress_docx_tables
 compressed = compress_docx_tables("report.docx")
 classes = classify_tables(compressed, categories)
 
 # PDF tables (via StructuredTable.to_compressed)
-from pdf_ocr import compress_spatial_text_structured, classify_tables
+from docpact import compress_spatial_text_structured, classify_tables
 tables = compress_spatial_text_structured("report.pdf")
 compressed = [t.to_compressed() for t in tables]
 classes = classify_tables(compressed, categories)
@@ -201,7 +201,7 @@ classes = classify_tables(
 ### Raw Extraction
 
 ```python
-from pdf_ocr import extract_tables_from_docx, extract_tables_from_word
+from docpact import extract_tables_from_docx, extract_tables_from_word
 
 # DOCX only
 tables = extract_tables_from_docx("report.docx")
@@ -217,7 +217,7 @@ for table in tables:
 ### Compressed Markdown (for `interpret_table()`)
 
 ```python
-from pdf_ocr import compress_docx_tables, classify_docx_tables
+from docpact import compress_docx_tables, classify_docx_tables
 
 # Define your own categories
 categories = {
@@ -240,7 +240,7 @@ for markdown, meta in results:
 ### Full Pipeline (DOCX to structured records)
 
 ```python
-from pdf_ocr import (
+from docpact import (
     compress_docx_tables,
     classify_docx_tables,
     extract_pivot_values,

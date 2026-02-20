@@ -7,7 +7,7 @@ deduplication with ` / ` joining instead of word-level dedup with spaces.
 
 from __future__ import annotations
 
-from pdf_ocr.heuristics import build_column_names_from_headers
+from docpact.heuristics import build_column_names_from_headers
 
 
 class TestBuildColumnNamesSlash:

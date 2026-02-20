@@ -118,7 +118,7 @@ for col, text in row_spans:
 ## API
 
 ```python
-from pdf_ocr import pdf_to_spatial_text
+from docpact import pdf_to_spatial_text
 
 text = pdf_to_spatial_text("document.pdf")
 ```
@@ -191,7 +191,7 @@ The `row_y_positions` field stores the mean Y coordinate for each row cluster, e
 ### Usage
 
 ```python
-from pdf_ocr.spatial_text import _extract_page_layout, _open_pdf
+from docpact.spatial_text import _extract_page_layout, _open_pdf
 
 doc = _open_pdf("document.pdf")
 layout = _extract_page_layout(doc[0], extract_visual=True)

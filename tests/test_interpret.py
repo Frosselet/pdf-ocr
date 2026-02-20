@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from baml_client import types as baml_types
 
-from pdf_ocr.interpret import (
+from docpact.interpret import (
     _count_pipe_data_rows,
     _merge_parsed_chunks,
     _split_pipe_table,

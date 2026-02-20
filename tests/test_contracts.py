@@ -1,4 +1,4 @@
-"""Tests for pdf_ocr.contracts — contract loading and DataFrame helpers.
+"""Tests for docpact.contracts — contract loading and DataFrame helpers.
 
 All pure-Python, no LLM calls.
 """
@@ -8,7 +8,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from pdf_ocr.contracts import (
+from docpact.contracts import (
     ContractContext,
     OutputSpec,
     enrich_dataframe,
@@ -16,8 +16,8 @@ from pdf_ocr.contracts import (
     load_contract,
     resolve_year_templates,
 )
-from pdf_ocr.interpret import CanonicalSchema, ColumnDef, UnpivotStrategy
-from pdf_ocr.report_date import ReportDateConfig
+from docpact.interpret import CanonicalSchema, ColumnDef, UnpivotStrategy
+from docpact.report_date import ReportDateConfig
 
 
 # ─── load_contract ───────────────────────────────────────────────────────────

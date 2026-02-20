@@ -133,7 +133,7 @@ if score >= threshold:
 ### Filter by Title
 
 ```python
-from pdf_ocr import filter_pdf_by_table_titles
+from docpact import filter_pdf_by_table_titles
 
 filtered_bytes, matches = filter_pdf_by_table_titles(
     "report.pdf",
@@ -164,7 +164,7 @@ filtered_bytes, matches = filter_pdf_by_table_titles(
 ### Debug: Extract All Titles
 
 ```python
-from pdf_ocr import extract_table_titles
+from docpact import extract_table_titles
 
 titles = extract_table_titles("report.pdf")
 for page_idx, page_titles in titles.items():

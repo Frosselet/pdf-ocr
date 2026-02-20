@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from baml_client import types as baml_types
 
-from pdf_ocr.interpret import (
+from docpact.interpret import (
     CanonicalSchema,
     ColumnDef,
     _DeterministicParsed,
@@ -1521,3 +1521,103 @@ class TestIsTextDataColumn:
     def test_mixed_mostly_text(self) -> None:
         rows = [["Russia"], ["100"], ["France"]]
         assert _is_text_data_column(rows, 0) is True
+
+
+# ─── TestDecorativeTableRestart ────────────────────────────────────────────
+
+
+class TestDecorativeTableRestart:
+    """Tests for Fix 2: decorative table restart when column count >= 2x."""
+
+    def test_decorative_table_restart(self) -> None:
+        """3-column logo table + 18-column real table → header is 18-column."""
+        logo_cols = "| LOGO | PART | TWO |"
+        sep3 = "|---|---|---|"
+        real_header = "| " + " | ".join(f"C{i}" for i in range(18)) + " |"
+        sep18 = "|" + "|".join(["---"] * 18) + "|"
+        data_row = "| " + " | ".join(str(i) for i in range(18)) + " |"
+
+        text = f"{logo_cols}\n{sep3}\n{real_header}\n{sep18}\n{data_row}"
+        parsed = _parse_pipe_table_deterministic(text)
+        assert parsed is not None
+        assert len(parsed.headers) == 18
+        assert parsed.headers[0] == "C0"
+        assert len(parsed.data_rows) == 1
+        assert parsed.data_rows[0][0] == "0"
+
+    def test_restart_preserves_title(self) -> None:
+        """Title before logo table is preserved after restart."""
+        text = (
+            "## My Title\n"
+            "| A | B | C |\n"
+            "|---|---|---|\n"
+            "| H1 | H2 | H3 | H4 | H5 | H6 |\n"
+            "|---|---|---|---|---|---|\n"
+            "| 1 | 2 | 3 | 4 | 5 | 6 |"
+        )
+        parsed = _parse_pipe_table_deterministic(text)
+        assert parsed is not None
+        assert parsed.title == "My Title"
+        assert len(parsed.headers) == 6
+
+    def test_no_restart_for_similar_column_count(self) -> None:
+        """Re-header with same column count → no restart, normal pop."""
+        text = (
+            "| A | B | C | D | E |\n"
+            "|---|---|---|---|---|\n"
+            "| 1 | 2 | 3 | 4 | 5 |\n"
+            "SECTION_B\n"
+            "| A | B | C | D | E |\n"
+            "|---|---|---|---|---|\n"
+            "| 6 | 7 | 8 | 9 | 10 |"
+        )
+        parsed = _parse_pipe_table_deterministic(text)
+        assert parsed is not None
+        assert len(parsed.headers) == 5
+        assert len(parsed.data_rows) == 2
+
+    def test_no_restart_below_2x_threshold(self) -> None:
+        """5-col header, 8-col re-header (ratio 1.6) → no restart."""
+        text = (
+            "| A | B | C | D | E |\n"
+            "|---|---|---|---|---|\n"
+            "| 1 | 2 | 3 | 4 | 5 |\n"
+            "| H1 | H2 | H3 | H4 | H5 | H6 | H7 | H8 |\n"
+            "|---|---|---|---|---|---|---|---|\n"
+            "| a | b | c | d | e | f | g | h |"
+        )
+        parsed = _parse_pipe_table_deterministic(text)
+        assert parsed is not None
+        # 8 < 5*2=10, so no restart — original 5-col header kept
+        assert len(parsed.headers) == 5
+
+
+# ─── TestDoublePipeCarryForward ────────────────────────────────────────────
+
+
+class TestDoublePipeCarryForward:
+    """Tests for Fix 3: || rows with same column count → data, not aggregation."""
+
+    def test_double_pipe_same_column_count_becomes_data(self) -> None:
+        """|| row with same cell count as header → data row."""
+        text = (
+            "| A | B | C |\n"
+            "|---|---|---|\n"
+            "| 1 | 2 | 3 |\n"
+            "|| carry | forward |"
+        )
+        parsed = _parse_pipe_table_deterministic(text)
+        assert parsed is not None
+        assert len(parsed.data_rows) == 2
+        assert parsed.data_rows[1] == ["", "carry", "forward"]
+        assert len(parsed.aggregation_rows) == 0
+
+    def test_double_pipe_different_column_count_stays_aggregation(self) -> None:
+        """|| row with fewer cells → aggregation (unchanged behavior)."""
+        text = "| A | B |\n|---|---|\n| 1 | 2 |\n|| Total | 2 |"
+        parsed = _parse_pipe_table_deterministic(text)
+        assert parsed is not None
+        assert len(parsed.data_rows) == 1
+        assert len(parsed.aggregation_rows) == 1
+        # || prefix produces an empty first cell from the leading double pipe
+        assert parsed.aggregation_rows[0] == ["", "Total", "2"]

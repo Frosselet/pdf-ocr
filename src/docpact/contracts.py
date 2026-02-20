@@ -6,7 +6,7 @@ independently useful — orchestration stays in the notebook.
 
 Usage::
 
-    from pdf_ocr.contracts import load_contract, resolve_year_templates, enrich_dataframe, format_dataframe
+    from docpact.contracts import load_contract, resolve_year_templates, enrich_dataframe, format_dataframe
 
     ctx = load_contract("contracts/ru_ag_ministry.json")
     # ... custom compress + classify + interpret ...
@@ -22,8 +22,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pdf_ocr.interpret import CanonicalSchema, ColumnDef, UnpivotStrategy
-from pdf_ocr.report_date import ReportDateConfig
+from docpact.interpret import CanonicalSchema, ColumnDef, UnpivotStrategy
+from docpact.report_date import ReportDateConfig
 
 # Year template pattern: {YYYY}, {YYYY-1}, {YYYY+1}, etc.
 _YEAR_TEMPLATE_RE = re.compile(r"\{YYYY([+-]\d+)?\}")
@@ -231,7 +231,7 @@ def format_dataframe(df, col_specs: list[dict]):
     - ``"earliest"`` — keep only rows where the column equals its min value.
 
     Other format values (date patterns, number patterns) are ignored here —
-    those are handled by :func:`pdf_ocr.serialize.to_csv` etc.
+    those are handled by :func:`docpact.serialize.to_csv` etc.
 
     Parameters:
         df: pandas DataFrame to format.

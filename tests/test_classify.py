@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from pdf_ocr.classify import (
+from docpact.classify import (
     _compute_similarity,
     _keyword_matches,
     _parse_pipe_header,
@@ -475,7 +475,7 @@ class TestPDFClassification:
 
     def test_cbh_shipping_stem(self) -> None:
         """CBH Shipping Stem tables can be classified via the PDF path."""
-        from pdf_ocr.compress import compress_spatial_text_structured
+        from docpact.compress import compress_spatial_text_structured
 
         pdf_path = Path("inputs/CBH Shipping Stem 26092025.pdf")
         if not pdf_path.exists():
@@ -496,7 +496,7 @@ class TestPDFClassification:
 
     def test_to_compressed_round_trip(self) -> None:
         """to_compressed() produces valid markdown parseable by _parse_pipe_header."""
-        from pdf_ocr.compress import StructuredTable, TableMetadata
+        from docpact.compress import StructuredTable, TableMetadata
 
         st = StructuredTable(
             metadata=TableMetadata(page_number=1, table_index=0, section_label="TEST"),
@@ -514,7 +514,7 @@ class TestPDFClassification:
 
     def test_to_compressed_no_section_label(self) -> None:
         """to_compressed() without section_label omits title."""
-        from pdf_ocr.compress import StructuredTable, TableMetadata
+        from docpact.compress import StructuredTable, TableMetadata
 
         st = StructuredTable(
             metadata=TableMetadata(page_number=1, table_index=0, section_label=None),
@@ -528,7 +528,7 @@ class TestPDFClassification:
 
     def test_to_compressed_short_rows_padded(self) -> None:
         """Data rows shorter than column_names are padded."""
-        from pdf_ocr.compress import StructuredTable, TableMetadata
+        from docpact.compress import StructuredTable, TableMetadata
 
         st = StructuredTable(
             metadata=TableMetadata(page_number=1, table_index=0, section_label=None),

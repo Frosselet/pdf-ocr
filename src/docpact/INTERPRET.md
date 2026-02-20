@@ -326,7 +326,7 @@ If primary fails, retry with fallback.
 ### Basic Usage
 
 ```python
-from pdf_ocr import compress_spatial_text, interpret_table, CanonicalSchema, ColumnDef, to_records
+from docpact import compress_spatial_text, interpret_table, CanonicalSchema, ColumnDef, to_records
 
 compressed = compress_spatial_text("document.pdf")
 
@@ -364,7 +364,7 @@ result = interpret_table(compressed, schema, batch_size=10)  # for very wide tab
 
 ```python
 import asyncio
-from pdf_ocr.interpret import interpret_tables_async
+from docpact.interpret import interpret_tables_async
 
 pages = compressed.split("\f")
 result = asyncio.run(interpret_tables_async(pages, schema))

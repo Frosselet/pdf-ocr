@@ -93,7 +93,7 @@ ColumnDef("country", "string", "Country name", format="uppercase")
 ### CSV/TSV
 
 ```python
-from pdf_ocr import to_csv, to_tsv
+from docpact import to_csv, to_tsv
 
 # Return string
 csv_str = to_csv(result, schema)
@@ -109,7 +109,7 @@ to_csv(result, schema, path="output.csv", include_page=True)
 ### Parquet
 
 ```python
-from pdf_ocr import to_parquet
+from docpact import to_parquet
 
 to_parquet(result, schema, "output.parquet")
 to_parquet(result, schema, "output.parquet", include_page=True)
@@ -120,7 +120,7 @@ Requires `pyarrow`.
 ### DataFrames
 
 ```python
-from pdf_ocr import to_pandas, to_polars
+from docpact import to_pandas, to_polars
 
 df = to_pandas(result, schema)
 df = to_pandas(result, schema, include_page=True)
@@ -146,9 +146,9 @@ pl_df = to_polars(result, schema, include_page=True)
 ## Optional Dependencies
 
 ```bash
-pip install pdf-ocr[dataframes]  # pandas + polars
-pip install pdf-ocr[parquet]     # pyarrow
-pip install pdf-ocr[all]         # everything
+pip install docpact[dataframes]  # pandas + polars
+pip install docpact[parquet]     # pyarrow
+pip install docpact[all]         # everything
 ```
 
 ---
@@ -156,7 +156,7 @@ pip install pdf-ocr[all]         # everything
 ## Validation Errors
 
 ```python
-from pdf_ocr import SerializationValidationError
+from docpact import SerializationValidationError
 
 try:
     csv_str = to_csv(result, schema)
@@ -173,7 +173,7 @@ In practice, validation rarely fails because coercion converts invalid values to
 ## Example
 
 ```python
-from pdf_ocr import interpret_table, to_csv, CanonicalSchema, ColumnDef
+from docpact import interpret_table, to_csv, CanonicalSchema, ColumnDef
 
 schema = CanonicalSchema(columns=[
     ColumnDef("country", "string", "Country name", format="uppercase"),

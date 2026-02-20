@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pdf_ocr.heuristics import (
+from docpact.heuristics import (
     StructuredTable,
     TableMetadata,
     build_column_names_from_headers,
@@ -360,7 +360,7 @@ def extract_tables_from_html(
     except ImportError as e:
         raise ImportError(
             "selectolax is required for HTML extraction. "
-            "Install with: pip install pdf-ocr[html]"
+            "Install with: pip install docpact[html]"
         ) from e
 
     # Load HTML content

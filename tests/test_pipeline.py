@@ -1,4 +1,4 @@
-"""Tests for pdf_ocr.pipeline — async pipeline orchestration helpers.
+"""Tests for docpact.pipeline — async pipeline orchestration helpers.
 
 All pure-Python, no LLM calls.  Tests that invoke interpretation use
 contracts/schemas where the deterministic mapper resolves all columns,
@@ -14,13 +14,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from pdf_ocr.contracts import (
+from docpact.contracts import (
     ContractContext,
     OutputSpec,
     load_contract,
 )
-from pdf_ocr.interpret import CanonicalSchema, ColumnDef, UnpivotStrategy
-from pdf_ocr.pipeline import (
+from docpact.interpret import CanonicalSchema, ColumnDef, UnpivotStrategy
+from docpact.pipeline import (
     DocumentResult,
     compress_and_classify_async,
     interpret_output_async,
@@ -390,7 +390,7 @@ class TestDocumentResult:
 
     def test_import_from_package(self):
         """DocumentResult is importable from the top-level package."""
-        from pdf_ocr import DocumentResult as DR
+        from docpact import DocumentResult as DR
         assert DR is DocumentResult
 
 

@@ -1,6 +1,6 @@
 """Tests for format-aware number coercion and output formatting in serialize.py."""
 
-from pdf_ocr.serialize import _coerce_value, _apply_number_format, _parse_number_format
+from docpact.serialize import _coerce_value, _apply_number_format, _parse_number_format
 
 
 # ─── _parse_number_format ────────────────────────────────────────────────────

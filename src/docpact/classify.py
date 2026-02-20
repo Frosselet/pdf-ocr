@@ -165,7 +165,7 @@ def classify_tables(
         ``cols``.
     """
     # Normalize pipe-table text before classification
-    from pdf_ocr.normalize import normalize_pipe_table
+    from docpact.normalize import normalize_pipe_table
     tables = [(normalize_pipe_table(md), meta) for md, meta in tables]
 
     # Lowercase all keywords once

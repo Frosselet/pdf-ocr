@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pdf_ocr.heuristics import (
+from docpact.heuristics import (
     StructuredTable,
     TableMetadata,
     build_column_names_from_headers,
@@ -527,7 +527,7 @@ def extract_tables_from_docx(
     except ImportError as e:
         raise ImportError(
             "python-docx is required for DOCX extraction. "
-            "Install with: pip install pdf-ocr[docx]"
+            "Install with: pip install docpact[docx]"
         ) from e
 
     path = Path(docx_path)
@@ -848,7 +848,7 @@ def compress_docx_tables(
     except ImportError as e:
         raise ImportError(
             "python-docx is required for DOCX extraction. "
-            "Install with: pip install pdf-ocr[docx]"
+            "Install with: pip install docpact[docx]"
         ) from e
 
     path = Path(docx_path)
@@ -986,14 +986,14 @@ def classify_docx_tables(
     Returns:
         List of dicts with ``index``, ``category``, ``title``, ``rows``, ``cols``.
     """
-    from pdf_ocr.classify import classify_tables
+    from docpact.classify import classify_tables
 
     try:
         from docx import Document
     except ImportError as e:
         raise ImportError(
             "python-docx is required for DOCX extraction. "
-            "Install with: pip install pdf-ocr[docx]"
+            "Install with: pip install docpact[docx]"
         ) from e
 
     path = Path(docx_path)
@@ -1036,7 +1036,7 @@ def classify_docx_tables(
 # Pivot value extraction
 # ---------------------------------------------------------------------------
 
-from pdf_ocr.classify import _YEAR_RE
+from docpact.classify import _YEAR_RE
 
 
 def extract_pivot_values(markdown: str) -> list[str]:

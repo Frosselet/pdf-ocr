@@ -17,7 +17,7 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 
-from pdf_ocr.spatial_text import (
+from docpact.spatial_text import (
     FontSpan,
     PageLayout,
     VisualElements,
@@ -29,7 +29,7 @@ from pdf_ocr.spatial_text import (
 
 # Import shared semantic heuristics
 # These encode universal human inference patterns applicable across formats
-from pdf_ocr.heuristics import (
+from docpact.heuristics import (
     CellType,
     detect_cell_type,
     detect_column_types,
@@ -1273,6 +1273,10 @@ def _detect_table_runs(
     current_run: list[int] = []
     # Pool of all unique column anchors in the current run.
     pool: set[int] = set()
+    # Track whether the last appended row was a single-span continuation
+    # (e.g. aggregation total). After such a row, the next multi-span row
+    # must demonstrate stronger structural alignment to continue the run.
+    last_was_single_span = False
 
     def _pool_overlap(cols: list[int]) -> tuple[int, float]:
         """Count how many of cols match something in the pool.
@@ -1317,6 +1321,7 @@ def _detect_table_runs(
             _flush_run()
             current_run = []
             pool = set()
+            last_was_single_span = False
             continue
 
         if sc < 2:
@@ -1326,17 +1331,20 @@ def _detect_table_runs(
                 if _is_table_continuation(text):
                     # Numeric value (likely subtotal/aggregate) — keep in table.
                     current_run.append(ri)
+                    last_was_single_span = True
                 else:
                     # Non-numeric text (likely section label) — flush the run.
                     _flush_run()
                     current_run = []
                     pool = set()
+                    last_was_single_span = False
             continue
 
         if not current_run:
             current_run = [ri]
             pool = set()
             _add_to_pool(cols)
+            last_was_single_span = False
             continue
 
         gap = ri - current_run[-1]
@@ -1346,14 +1354,25 @@ def _detect_table_runs(
         # 1. Reasonable row gap (adjacent or near-adjacent)
         # 2. Either: at least 2 columns overlap, OR most columns (>= 60%) fit
         #    the established structure (handles rows with empty cells)
-        if gap <= 2 and (overlap_count >= 2 or overlap_ratio >= 0.6):
+        #
+        # After a single-span continuation (aggregation total), require BOTH
+        # conditions — a single-span row is a natural table boundary signal,
+        # so the next multi-span row must demonstrate strong structural
+        # alignment (not just 2 coincidental column matches).
+        if last_was_single_span:
+            passes = overlap_count >= 2 and overlap_ratio >= 0.5
+        else:
+            passes = overlap_count >= 2 or overlap_ratio >= 0.6
+        if gap <= 2 and passes:
             current_run.append(ri)
             _add_to_pool(cols)
+            last_was_single_span = False
         else:
             _flush_run()
             current_run = [ri]
             pool = set()
             _add_to_pool(cols)
+            last_was_single_span = False
 
     _flush_run()
     return runs
@@ -2266,7 +2285,7 @@ def _compress_page_structured(
 
     # === FALLBACK: no tables detected, ask the LLM ===
     if not has_tables and refine_headers:
-        from pdf_ocr.spatial_text import _render_page_grid
+        from docpact.spatial_text import _render_page_grid
         spatial = _render_page_grid(page, cluster_threshold)
         detected = _detect_table_with_llm(spatial)
         if detected and detected.column_names:
@@ -2713,7 +2732,7 @@ def _compress_page(
 
     # === FALLBACK: no tables detected, ask the LLM ===
     if not has_tables and refine_headers:
-        from pdf_ocr.spatial_text import _render_page_grid
+        from docpact.spatial_text import _render_page_grid
         spatial = _render_page_grid(page, cluster_threshold)
         detected = _detect_table_with_llm(spatial)
         if detected and detected.column_names:

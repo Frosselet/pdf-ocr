@@ -11,7 +11,7 @@ Flow:
 
 Usage::
 
-    from pdf_ocr import search_and_extract, CanonicalSchema, MetadataFieldDef
+    from docpact import search_and_extract, CanonicalSchema, MetadataFieldDef
 
     schema = CanonicalSchema(
         columns=[...],
@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pdf_ocr.heuristics import (
+from docpact.heuristics import (
     FallbackStrategy,
     MetadataCategory,
     MetadataFieldDef,
@@ -46,7 +46,7 @@ from pdf_ocr.heuristics import (
     detect_temporal_patterns,
     detect_unit_patterns,
 )
-from pdf_ocr.spatial_text import PageLayout, _extract_page_layout, _open_pdf
+from docpact.spatial_text import PageLayout, _extract_page_layout, _open_pdf
 
 log = logging.getLogger(__name__)
 
@@ -457,8 +457,8 @@ def search_and_extract(
     Returns:
         SearchExtractResult with metadata, tables, validation, and warnings.
     """
-    from pdf_ocr.compress import compress_spatial_text
-    from pdf_ocr.interpret import interpret_table
+    from docpact.compress import compress_spatial_text
+    from docpact.interpret import interpret_table
 
     warnings: list[str] = []
 

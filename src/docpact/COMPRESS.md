@@ -576,7 +576,7 @@ Font heuristics extract typographic signals from PyMuPDF span attributes and cro
 ### Markdown Output
 
 ```python
-from pdf_ocr import compress_spatial_text
+from docpact import compress_spatial_text
 
 text = compress_spatial_text("document.pdf")
 ```
@@ -584,7 +584,7 @@ text = compress_spatial_text("document.pdf")
 ### Structured Output
 
 ```python
-from pdf_ocr import compress_spatial_text_structured, StructuredTable, TableMetadata
+from docpact import compress_spatial_text_structured, StructuredTable, TableMetadata
 
 tables = compress_spatial_text_structured("document.pdf")
 

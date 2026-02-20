@@ -10,7 +10,7 @@ metadata.  Records contain only canonical schema fields.
 
 Sync usage::
 
-    from pdf_ocr import compress_spatial_text, interpret_table, CanonicalSchema, ColumnDef, to_records
+    from docpact import compress_spatial_text, interpret_table, CanonicalSchema, ColumnDef, to_records
 
     compressed = compress_spatial_text("inputs/example.pdf")
     schema = CanonicalSchema(columns=[
@@ -26,7 +26,7 @@ Sync usage::
 Async usage (explicit parallel control across pre-split tables)::
 
     import asyncio
-    from pdf_ocr.interpret import interpret_tables_async, CanonicalSchema, ColumnDef
+    from docpact.interpret import interpret_tables_async, CanonicalSchema, ColumnDef
 
     tables = await interpret_tables_async([page1, page2, page3], schema, model="openai/gpt-4o")
 """
@@ -46,9 +46,9 @@ from baml_client.async_client import b as b_async
 from baml_client.type_builder import TypeBuilder
 from baml_py import Image
 
-from pdf_ocr.heuristics import MetadataFieldDef
-from pdf_ocr.normalize import normalize_pipe_table
-from pdf_ocr.spatial_text import _open_pdf
+from docpact.heuristics import MetadataFieldDef
+from docpact.normalize import normalize_pipe_table
+from docpact.spatial_text import _open_pdf
 
 DEFAULT_MODEL = "openai/gpt-4o"
 
@@ -144,7 +144,7 @@ class CanonicalSchema:
                 ]
             }
         """
-        from pdf_ocr.heuristics import (
+        from docpact.heuristics import (
             FallbackStrategy,
             MetadataCategory,
             MetadataFieldDef,
@@ -1116,6 +1116,22 @@ def _parse_pipe_table_deterministic(compressed_text: str) -> _DeterministicParse
         if _SEPARATOR_RE.match(s):
             if last_was_data_row:
                 popped = data_rows.pop()
+                # A column count jump of >= 2x signals a completely different
+                # table (e.g. decorative logo table followed by real data
+                # table). Restart the parse with the popped row as the new
+                # header. Legitimate re-headers have near-identical column
+                # counts (differ by 0-2).
+                if len(popped) >= len(headers) * 2:
+                    headers = popped
+                    data_rows.clear()
+                    sections.clear()
+                    aggregation_rows.clear()
+                    section_reheaders.clear()
+                    current_section = None
+                    section_start = None
+                    # title is preserved — applies to whole document section
+                    last_was_data_row = False
+                    continue
                 # Save re-header for per-section column remapping
                 if current_section is not None and len(popped) != len(headers):
                     section_reheaders[current_section] = popped
@@ -1128,10 +1144,21 @@ def _parse_pipe_table_deterministic(compressed_text: str) -> _DeterministicParse
                 last_was_data_row = False
                 continue
 
-        # Aggregation row: || prefix (first cell empty)
+        # Aggregation row: || prefix (first cell empty).
+        # The compressor always generates rows with exactly num_cols cells,
+        # so a || row with the same cell count as the header is a data row
+        # with a blank first cell (carry-forward pattern), not aggregation.
+        # Hand-written aggregation patterns (like || Total | 2 | in a
+        # 5-column table) typically have fewer cells because they span.
         if s.startswith("||"):
-            aggregation_rows.append(_split_pipe_row(s))
-            last_was_data_row = False
+            cells = _split_pipe_row(s)
+            if len(cells) == len(headers):
+                # Same column count as header: data row with blank first cell
+                data_rows.append(cells)
+                last_was_data_row = True
+            else:
+                aggregation_rows.append(cells)
+                last_was_data_row = False
             continue
 
         # Data row
@@ -1868,13 +1895,13 @@ async def _interpret_pages_batched_async(
         llm_pages = [pages[i] for i in llm_page_indices]
         # Unpivot for LLM only
         if strategy == UnpivotStrategy.SCHEMA_AGNOSTIC:
-            from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
+            from docpact.unpivot import unpivot_pipe_table as _unpivot
             llm_pages = [_unpivot(p).text for p in llm_pages]
     else:
         llm_pages = pages
         llm_page_indices = list(range(len(pages)))
         if strategy == UnpivotStrategy.SCHEMA_AGNOSTIC:
-            from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
+            from docpact.unpivot import unpivot_pipe_table as _unpivot
             llm_pages = [_unpivot(p).text for p in llm_pages]
 
     effective_vision_model = vision_model or model
@@ -2222,14 +2249,14 @@ def interpret_table(
         # Only LLM-needed pages continue below — unpivot for LLM only
         llm_pages = [pages[i] for i in llm_needed]
         if strategy == UnpivotStrategy.SCHEMA_AGNOSTIC:
-            from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
+            from docpact.unpivot import unpivot_pipe_table as _unpivot
             llm_pages = [_unpivot(p).text for p in llm_pages]
     else:
         det_results = {}
         llm_needed = list(range(len(pages)))
         llm_pages = pages
         if strategy == UnpivotStrategy.SCHEMA_AGNOSTIC:
-            from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
+            from docpact.unpivot import unpivot_pipe_table as _unpivot
             llm_pages = [_unpivot(p).text for p in llm_pages]
 
     if len(llm_pages) == 1 and page_images is None:
@@ -2400,7 +2427,7 @@ def interpret_table_single_shot(
     # Unpivot only LLM-needed pages
     llm_pages = [pages[i] for i in llm_needed]
     if strategy == UnpivotStrategy.SCHEMA_AGNOSTIC:
-        from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
+        from docpact.unpivot import unpivot_pipe_table as _unpivot
         llm_pages = [_unpivot(p).text for p in llm_pages]
 
     if len(llm_pages) == 1:
@@ -2645,7 +2672,7 @@ async def interpret_table_async(
         return det
     # Unpivot only for the LLM path
     if strategy == UnpivotStrategy.SCHEMA_AGNOSTIC:
-        from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
+        from docpact.unpivot import unpivot_pipe_table as _unpivot
         compressed_text = _unpivot(compressed_text).text
     parsed = await analyze_and_parse_async(compressed_text, model=model, fallback_model=fallback_model)
     result = await map_to_schema_async(parsed, schema, model=model, fallback_model=fallback_model)
@@ -2705,7 +2732,7 @@ async def interpret_tables_async(
 
     # Unpivot only LLM-needed texts
     if strategy == UnpivotStrategy.SCHEMA_AGNOSTIC:
-        from pdf_ocr.unpivot import unpivot_pipe_table as _unpivot
+        from docpact.unpivot import unpivot_pipe_table as _unpivot
         llm_texts = [_unpivot(compressed_texts[i]).text for i in llm_indices]
     else:
         llm_texts = [compressed_texts[i] for i in llm_indices]

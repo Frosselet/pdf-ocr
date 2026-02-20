@@ -120,4 +120,4 @@ That openness is the point.
 
 *[First article: The Data Humans Make →](the-data-humans-make.md)*
 
-*[Technical documentation →](../src/pdf_ocr/README.md)*
+*[Technical documentation →](../src/docpact/README.md)*

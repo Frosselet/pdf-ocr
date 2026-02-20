@@ -176,7 +176,7 @@ These are quick fixes that improve results now:
 
 ## Files Referenced
 
-- `src/pdf_ocr/interpret.py` — `_map_to_schema_deterministic()` lines 1206-1470
+- `src/docpact/interpret.py` — `_map_to_schema_deterministic()` lines 1206-1470
 - `contracts/ru_ag_ministry.json` — harvest/planting schemas
-- `src/pdf_ocr/docx_extractor.py` — `compress_docx_tables()` produces the pipe-table headers
-- `src/pdf_ocr/compress.py` — header flattening logic (stacked → ` / `-joined)
+- `src/docpact/docx_extractor.py` — `compress_docx_tables()` produces the pipe-table headers
+- `src/docpact/compress.py` — header flattening logic (stacked → ` / `-joined)

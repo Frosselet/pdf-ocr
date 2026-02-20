@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pdf_ocr.heuristics import (
+from docpact.heuristics import (
     CellType,
     StructuredTable,
     TableMetadata,
@@ -400,7 +400,7 @@ def extract_tables_from_xlsx(
     except ImportError as e:
         raise ImportError(
             "openpyxl is required for XLSX extraction. "
-            "Install with: pip install pdf-ocr[xlsx]"
+            "Install with: pip install docpact[xlsx]"
         ) from e
 
     path = Path(xlsx_path)
@@ -521,7 +521,7 @@ def _extract_tables_from_xls(
     except ImportError as e:
         raise ImportError(
             "xlrd is required for XLS extraction. "
-            "Install with: pip install pdf-ocr[xls]"
+            "Install with: pip install docpact[xls]"
         ) from e
 
     path = Path(xls_path)

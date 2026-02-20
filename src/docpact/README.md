@@ -1,4 +1,4 @@
-# pdf_ocr — Structured Document Data Extraction
+# docpact — Structured Document Data Extraction
 
 Extract structured tabular data from PDFs, Excel, Word, PowerPoint, and HTML using spatial text analysis and LLM interpretation.
 
@@ -78,7 +78,7 @@ PDF
 ## Quick Start
 
 ```python
-from pdf_ocr import compress_spatial_text, interpret_table, CanonicalSchema, ColumnDef, to_csv
+from docpact import compress_spatial_text, interpret_table, CanonicalSchema, ColumnDef, to_csv
 
 # 1. Compress PDF to structured text
 compressed = compress_spatial_text("document.pdf")
@@ -103,7 +103,7 @@ csv_str = to_csv(result, schema)
 For programmatic access to tables without LLM interpretation:
 
 ```python
-from pdf_ocr import compress_spatial_text_structured
+from docpact import compress_spatial_text_structured
 
 tables = compress_spatial_text_structured("document.pdf")
 
@@ -119,7 +119,7 @@ for table in tables:
 Classify tables by matching headers against user-defined keyword categories. Works with both PDF and DOCX tables:
 
 ```python
-from pdf_ocr import compress_spatial_text_structured, classify_tables
+from docpact import compress_spatial_text_structured, classify_tables
 
 # PDF path
 tables = compress_spatial_text_structured("document.pdf")
@@ -137,7 +137,7 @@ for c in classes:
 
 ```python
 # DOCX shortcut
-from pdf_ocr import classify_docx_tables
+from docpact import classify_docx_tables
 
 classes = classify_docx_tables("report.docx", categories,
     propagate=True, propagate_threshold=0.3)
@@ -148,7 +148,7 @@ classes = classify_docx_tables("report.docx", categories,
 Extract document metadata (dates, currency, units) before LLM interpretation:
 
 ```python
-from pdf_ocr import (
+from docpact import (
     search_and_extract,
     CanonicalSchema,
     ColumnDef,
@@ -377,7 +377,7 @@ Beyond PDFs, this library extracts tables from Excel, Word, PowerPoint, and HTML
 #### Excel (XLSX/XLS)
 
 ```python
-from pdf_ocr import extract_tables_from_excel
+from docpact import extract_tables_from_excel
 
 # Auto-detects format (.xlsx or .xls)
 tables = extract_tables_from_excel("report.xlsx")
@@ -394,7 +394,7 @@ for table in tables:
 #### Word (DOCX/DOC)
 
 ```python
-from pdf_ocr import extract_tables_from_word
+from docpact import extract_tables_from_word
 
 # Auto-detects format (.docx or .doc)
 # Note: .doc requires LibreOffice installed
@@ -407,7 +407,7 @@ for i, table in enumerate(tables):
 #### PowerPoint (PPTX/PPT)
 
 ```python
-from pdf_ocr import extract_tables_from_powerpoint
+from docpact import extract_tables_from_powerpoint
 
 # Extracts both table shapes and text-box tables
 tables = extract_tables_from_powerpoint("presentation.pptx")
@@ -422,7 +422,7 @@ for table in tables:
 #### HTML
 
 ```python
-from pdf_ocr import extract_tables_from_html
+from docpact import extract_tables_from_html
 
 # From file
 tables = extract_tables_from_html("page.html")
@@ -464,7 +464,7 @@ class StructuredTable:
 Uses `xlrd` library directly — no conversion needed:
 
 ```python
-from pdf_ocr import extract_tables_from_excel
+from docpact import extract_tables_from_excel
 
 # Works with both formats
 tables = extract_tables_from_excel("legacy_report.xls")
@@ -491,7 +491,7 @@ The library auto-detects LibreOffice location:
 - Windows: `C:\Program Files\LibreOffice\program\soffice.exe`
 
 ```python
-from pdf_ocr import extract_tables_from_word
+from docpact import extract_tables_from_word
 
 # Automatically converts .doc → .docx, then extracts
 tables = extract_tables_from_word("legacy_document.doc")
@@ -521,7 +521,7 @@ If you only need one format, use the specific extractors:
 
 ```python
 # Modern formats only
-from pdf_ocr import (
+from docpact import (
     extract_tables_from_xlsx,  # .xlsx only
     extract_tables_from_docx,  # .docx only
     extract_tables_from_pptx,  # .pptx only
@@ -529,7 +529,7 @@ from pdf_ocr import (
 )
 
 # Unified extractors (auto-detect old/new)
-from pdf_ocr import (
+from docpact import (
     extract_tables_from_excel,      # .xlsx + .xls
     extract_tables_from_word,       # .docx + .doc
     extract_tables_from_powerpoint, # .pptx + .ppt
@@ -541,19 +541,19 @@ from pdf_ocr import (
 ## Installation
 
 ```bash
-pip install pdf-ocr
+pip install docpact
 
 # Optional dependencies for multi-format support
-pip install pdf-ocr[xlsx]        # Excel 2007+ (.xlsx)
-pip install pdf-ocr[xls]         # Excel 97-2003 (.xls)
-pip install pdf-ocr[excel]       # Both Excel formats
-pip install pdf-ocr[docx]        # Word (.docx, .doc with LibreOffice)
-pip install pdf-ocr[pptx]        # PowerPoint (.pptx, .ppt with LibreOffice)
-pip install pdf-ocr[html]        # HTML tables
-pip install pdf-ocr[formats]     # All document formats
-pip install pdf-ocr[dataframes]  # pandas + polars
-pip install pdf-ocr[parquet]     # pyarrow
-pip install pdf-ocr[all]         # everything
+pip install docpact[xlsx]        # Excel 2007+ (.xlsx)
+pip install docpact[xls]         # Excel 97-2003 (.xls)
+pip install docpact[excel]       # Both Excel formats
+pip install docpact[docx]        # Word (.docx, .doc with LibreOffice)
+pip install docpact[pptx]        # PowerPoint (.pptx, .ppt with LibreOffice)
+pip install docpact[html]        # HTML tables
+pip install docpact[formats]     # All document formats
+pip install docpact[dataframes]  # pandas + polars
+pip install docpact[parquet]     # pyarrow
+pip install docpact[all]         # everything
 ```
 
 ## Environment Variables

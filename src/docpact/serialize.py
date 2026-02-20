@@ -7,7 +7,7 @@ and apply output formatting specified in the schema's ``format`` field.
 
 Usage::
 
-    from pdf_ocr import interpret_table, CanonicalSchema, ColumnDef, to_csv, to_pandas
+    from docpact import interpret_table, CanonicalSchema, ColumnDef, to_csv, to_pandas
 
     result = interpret_table(compressed, schema)
 
@@ -41,7 +41,7 @@ from typing import Any, TYPE_CHECKING
 
 from pydantic import BaseModel, ValidationError, create_model
 
-from pdf_ocr.interpret import CanonicalSchema, ColumnDef
+from docpact.interpret import CanonicalSchema, ColumnDef
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -696,7 +696,7 @@ def to_parquet(
 
     or::
 
-        pip install pdf-ocr[parquet]
+        pip install docpact[parquet]
 
     Args:
         result: Output from ``interpret_table()`` (page-keyed dict) or single MappedTable.
@@ -715,7 +715,7 @@ def to_parquet(
         raise ImportError(
             "pyarrow is required for Parquet export. "
             "Install it with: pip install pyarrow "
-            "or: pip install pdf-ocr[parquet]"
+            "or: pip install docpact[parquet]"
         ) from e
 
     records = _flatten_and_validate(result, schema, include_page, format_numbers=False)
@@ -767,7 +767,7 @@ def to_pandas(
 
     or::
 
-        pip install pdf-ocr[dataframes]
+        pip install docpact[dataframes]
 
     Args:
         result: Output from ``interpret_table()`` (page-keyed dict) or single MappedTable.
@@ -787,7 +787,7 @@ def to_pandas(
         raise ImportError(
             "pandas is required for DataFrame export. "
             "Install it with: pip install pandas "
-            "or: pip install pdf-ocr[dataframes]"
+            "or: pip install docpact[dataframes]"
         ) from e
 
     records = _flatten_and_validate(result, schema, include_page, format_numbers=False)
@@ -825,7 +825,7 @@ def to_polars(
 
     or::
 
-        pip install pdf-ocr[dataframes]
+        pip install docpact[dataframes]
 
     Args:
         result: Output from ``interpret_table()`` (page-keyed dict) or single MappedTable.
@@ -845,7 +845,7 @@ def to_polars(
         raise ImportError(
             "polars is required for DataFrame export. "
             "Install it with: pip install polars "
-            "or: pip install pdf-ocr[dataframes]"
+            "or: pip install docpact[dataframes]"
         ) from e
 
     records = _flatten_and_validate(result, schema, include_page, format_numbers=False)
