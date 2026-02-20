@@ -1,0 +1,32 @@
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix docpact: <http://docpact.dev/schema/> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+docpact:HarvestRecordShape
+    a sh:NodeShape ;
+    sh:targetClass docpact:Record ;
+    sh:property [
+        sh:path docpact:Region ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:name "Region"
+    ] ;
+    sh:property [
+        sh:path docpact:Metric ;
+        sh:datatype xsd:string ;
+        sh:in ("Area harvested" "collected" "Yield") ;
+        sh:name "Metric"
+    ] ;
+    sh:property [
+        sh:path docpact:Value ;
+        sh:minInclusive 0 ;
+        sh:name "Value"
+    ] ;
+    sh:property [
+        sh:path docpact:Year ;
+        sh:datatype xsd:integer ;
+        sh:minInclusive 2000 ;
+        sh:maxInclusive 2030 ;
+        sh:name "Year"
+    ] .

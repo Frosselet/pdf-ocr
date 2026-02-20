@@ -1,0 +1,39 @@
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix docpact: <http://docpact.dev/schema/> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+docpact:VesselsRecordShape
+    a sh:NodeShape ;
+    sh:targetClass docpact:Record ;
+    sh:property [ sh:path docpact:load_port ;
+      sh:datatype xsd:string ;
+      sh:in ("Port" "PORT" "Loading Port" "GERALDTON" "KWINANA" "ALBANY" "ESPERANCE") ;
+      sh:name "load_port" ] ;
+    sh:property [ sh:path docpact:vessel_name ;
+      sh:datatype xsd:string ;
+      sh:in ("Ship Name" "NAME OF SHIP" "Vessel Name" "Vessel" "Name of ship") ;
+      sh:name "vessel_name" ] ;
+    sh:property [ sh:path docpact:ref_id ;
+      sh:datatype xsd:string ;
+      sh:in ("Ref #" "UNIQUE SLOT REFERENCE NUMBER" "VNA #" "Reference") ;
+      sh:name "ref_id" ] ;
+    sh:property [ sh:path docpact:shipper ;
+      sh:datatype xsd:string ;
+      sh:in ("Exporter" "EXPORTER" "Client" "Shipper") ;
+      sh:name "shipper" ] ;
+    sh:property [ sh:path docpact:commodity ;
+      sh:datatype xsd:string ;
+      sh:in ("Commodity" "COMMODITY" "Cargo") ;
+      sh:name "commodity" ] ;
+    sh:property [ sh:path docpact:tons ;
+      sh:datatype xsd:integer ;
+      sh:name "tons" ] ;
+    sh:property [ sh:path docpact:eta ;
+      sh:datatype xsd:string ;
+      sh:in ("ETA" "Date ETA of Ship To" "DATE ETA OF SHIP TO" "Date of ETA of Ship From") ;
+      sh:name "eta" ] ;
+    sh:property [ sh:path docpact:status ;
+      sh:datatype xsd:string ;
+      sh:in ("Status" "Load Status" "Loading Status" "LOADING COMMENCED OR COMPLETED" "Loading commenced or completed" "Loading "commenced" or "completed"") ;
+      sh:name "status" ] .

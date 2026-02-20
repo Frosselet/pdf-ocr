@@ -36,6 +36,7 @@ from docpact.retrieval import (
 from docpact.contracts import (
     ContractContext,
     OutputSpec,
+    SemanticColumnSpec,
     load_contract,
     resolve_year_templates,
     enrich_dataframe,
@@ -50,6 +51,15 @@ from docpact.pipeline import (
     save,
 )
 from docpact.report_date import ReportDateConfig, resolve_report_date
+from docpact.semantics import (
+    PreFlightFinding,
+    PreFlightReport,
+    SemanticContext,
+    ValidationFinding,
+    ValidationReport,
+    preflight_check,
+    validate_output,
+)
 from docpact.interpret import (
     CanonicalSchema,
     ColumnDef,
@@ -170,10 +180,19 @@ __all__ = [
     # Contract helpers
     "ContractContext",
     "OutputSpec",
+    "SemanticColumnSpec",
     "load_contract",
     "resolve_year_templates",
     "enrich_dataframe",
     "format_dataframe",
+    # Semantic awareness
+    "PreFlightFinding",
+    "PreFlightReport",
+    "SemanticContext",
+    "ValidationFinding",
+    "ValidationReport",
+    "preflight_check",
+    "validate_output",
     # Pipeline orchestration
     "DocumentResult",
     "compress_and_classify_async",

@@ -11,3 +11,7 @@ wheels/
 
 # Pipeline outputs
 outputs/
+
+# Contract-semantics downloaded ontology data
+tools/contract-semantics/data/*
+!tools/contract-semantics/data/.gitkeep

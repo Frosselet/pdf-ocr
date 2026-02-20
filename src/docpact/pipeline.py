@@ -55,6 +55,7 @@ from docpact.interpret import (
     _split_pages,
 )
 from docpact.report_date import resolve_report_date
+from docpact.semantics import SemanticContext
 from docpact.serialize import to_pandas
 
 
@@ -72,12 +73,19 @@ class DocumentResult:
             Values are ``str`` (PDF pipe-table text) or
             ``list[tuple[str, dict]]`` (DOCX markdown + metadata).
         dataframes: Interpreted DataFrames keyed by output name.
+        preflight_reports: Pre-flight header check results keyed by output name.
+            Populated when ``semantic_context`` is provided.
+        validation_reports: Post-extraction validation results keyed by output name.
+            Populated when ``semantic_context`` is provided and columns have
+            ``validate=True``.
     """
 
     doc_path: str
     report_date: str
     compressed_by_category: dict[str, str | list[tuple[str, dict]]]
     dataframes: dict[str, pd.DataFrame]
+    preflight_reports: dict = field(default_factory=dict)
+    validation_reports: dict = field(default_factory=dict)
 
 
 # ─── Layer 1: Compress & classify ────────────────────────────────────────────
@@ -152,6 +160,7 @@ async def interpret_output_async(
     unpivot: UnpivotStrategy | bool = True,
     report_date: str = "",
     pivot_years: list[str] | None = None,
+    semantic_context: SemanticContext | None = None,
 ) -> pd.DataFrame:
     """Interpret compressed data for one output category, returning a DataFrame.
 
@@ -166,6 +175,7 @@ async def interpret_output_async(
         unpivot: Unpivot strategy.
         report_date: Resolved report date string for enrichment.
         pivot_years: Document-extracted years for ``{YYYY}`` template resolution.
+        semantic_context: Optional pre-resolved semantic data for alias enrichment.
     """
     # Deep-copy schema to avoid mutating caller's aliases
     schema = copy.deepcopy(output_spec.schema)
@@ -179,6 +189,17 @@ async def interpret_output_async(
         if has_templates:
             for col in schema.columns:
                 col.aliases = resolve_year_templates(col.aliases, pivot_years)
+
+    # Merge resolved aliases from SemanticContext (additive only)
+    if semantic_context is not None:
+        for col in schema.columns:
+            extra = semantic_context.aliases_for(output_spec.name, col.name)
+            if extra:
+                existing_lower = {a.lower() for a in col.aliases}
+                for alias in extra:
+                    if alias.lower() not in existing_lower:
+                        col.aliases.append(alias)
+                        existing_lower.add(alias.lower())
 
     # Also resolve {YYYY} templates in enrichment constant values
     enrichment = copy.deepcopy(output_spec.enrichment)
@@ -233,11 +254,15 @@ async def process_document_async(
     cc: ContractContext,
     *,
     refine_headers: bool = True,
+    semantic_context: SemanticContext | None = None,
 ) -> DocumentResult:
     """Compress, classify, interpret, and enrich a single document.
 
     Composes :func:`compress_and_classify_async` and
     :func:`interpret_output_async` with report-date resolution.
+
+    When *semantic_context* is provided, also runs pre-flight header checks
+    (after compress) and post-extraction validation (after enrichment).
     """
     # Resolve report date
     if cc.report_date_config:
@@ -249,6 +274,17 @@ async def process_document_async(
     compressed_by_category = await compress_and_classify_async(
         doc_path, cc.categories, cc.outputs, refine_headers=refine_headers,
     )
+
+    # Pre-flight check (informational, never blocks extraction)
+    preflight_reports: dict = {}
+    if semantic_context is not None:
+        from docpact.semantics import preflight_check
+
+        for out_name, data in compressed_by_category.items():
+            if out_name in cc.outputs:
+                preflight_reports[out_name] = preflight_check(
+                    data, cc.outputs[out_name], semantic_context,
+                )
 
     # Extract pivot years for DOCX (PDF: not yet implemented)
     is_docx = doc_path.lower().endswith((".docx", ".doc"))
@@ -266,7 +302,11 @@ async def process_document_async(
 
     # Interpret all output categories concurrently
     tasks = [
-        _interpret_one(out_name, data, cc, report_date=report_date, pivot_years=pivot_years)
+        _interpret_one(
+            out_name, data, cc,
+            report_date=report_date, pivot_years=pivot_years,
+            semantic_context=semantic_context,
+        )
         for out_name, data in compressed_by_category.items()
     ]
     if tasks:
@@ -275,11 +315,24 @@ async def process_document_async(
     else:
         dataframes = {}
 
+    # Post-extraction validation
+    validation_reports: dict = {}
+    if semantic_context is not None:
+        from docpact.semantics import validate_output
+
+        for out_name, df in dataframes.items():
+            if out_name in cc.outputs:
+                validation_reports[out_name] = validate_output(
+                    df, cc.outputs[out_name], semantic_context,
+                )
+
     return DocumentResult(
         doc_path=doc_path,
         report_date=report_date,
         compressed_by_category=compressed_by_category,
         dataframes=dataframes,
+        preflight_reports=preflight_reports,
+        validation_reports=validation_reports,
     )
 
 
@@ -290,6 +343,7 @@ async def _interpret_one(
     *,
     report_date: str,
     pivot_years: list[str],
+    semantic_context: SemanticContext | None = None,
 ) -> tuple[str, pd.DataFrame]:
     """Interpret a single output category — returns ``(name, DataFrame)``."""
     df = await interpret_output_async(
@@ -299,6 +353,7 @@ async def _interpret_one(
         unpivot=cc.unpivot,
         report_date=report_date,
         pivot_years=pivot_years,
+        semantic_context=semantic_context,
     )
     return out_name, df
 
@@ -360,6 +415,7 @@ async def run_pipeline_async(
     output_dir: str | Path = "outputs",
     *,
     refine_headers: bool = True,
+    semantic_context: SemanticContext | None = None,
 ) -> tuple[list[DocumentResult], dict[str, list[pd.DataFrame]], dict[str, Path], float]:
     """Orchestrate the full pipeline with document-level concurrency.
 
@@ -371,6 +427,8 @@ async def run_pipeline_async(
         doc_paths: Paths to the documents to process.
         output_dir: Directory for output files (format driven by contract).
         refine_headers: Whether to refine PDF headers (passed through).
+        semantic_context: Optional pre-resolved semantic data for alias
+            enrichment, pre-flight checks, and post-extraction validation.
 
     Returns:
         ``(results, merged, paths, elapsed)`` — *results* is a list of
@@ -390,7 +448,14 @@ async def run_pipeline_async(
 
     print("\nPROCESS (async — compress + classify + interpret per document)")
     results = await asyncio.gather(
-        *[process_document_async(str(p), cc, refine_headers=refine_headers) for p in doc_paths]
+        *[
+            process_document_async(
+                str(p), cc,
+                refine_headers=refine_headers,
+                semantic_context=semantic_context,
+            )
+            for p in doc_paths
+        ]
     )
     for r in results:
         cats = list(r.dataframes.keys())

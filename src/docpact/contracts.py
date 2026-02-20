@@ -33,6 +33,27 @@ _YEAR_TEMPLATE_RE = re.compile(r"\{YYYY([+-]\d+)?\}")
 
 
 @dataclass
+class SemanticColumnSpec:
+    """Semantic metadata for a contract column.
+
+    Parsed from ``concept_uris``, ``resolve``, and ``semantic`` fields
+    in the contract JSON.  Used by :mod:`docpact.semantics` for pre-flight
+    checks and post-extraction validation.
+
+    Attributes:
+        column_name: Name of the schema column.
+        concept_uris: Raw concept URI + label dicts from the contract.
+        resolve_config: Raw resolve configuration dict.
+        validate: Whether to validate extracted values against known labels.
+    """
+
+    column_name: str
+    concept_uris: list[dict] = field(default_factory=list)
+    resolve_config: dict = field(default_factory=dict)
+    validate: bool = False
+
+
+@dataclass
 class OutputSpec:
     """Parsed output specification from a contract.
 
@@ -43,6 +64,8 @@ class OutputSpec:
         schema: :class:`CanonicalSchema` with LLM columns only.
         enrichment: Source-based columns (``"title"``, ``"report_date"``, ``"constant"``).
         col_specs: Raw column specs for formatting/filtering.
+        semantic_columns: ``{column_name: SemanticColumnSpec}`` for columns
+            with ``concept_uris`` annotations.
     """
 
     name: str
@@ -51,6 +74,7 @@ class OutputSpec:
     schema: CanonicalSchema
     enrichment: dict[str, dict]
     col_specs: list[dict]
+    semantic_columns: dict[str, SemanticColumnSpec] = field(default_factory=dict)
 
 
 @dataclass
@@ -74,6 +98,7 @@ class ContractContext:
     outputs: dict[str, OutputSpec]
     report_date_config: ReportDateConfig | None
     raw: dict
+    has_semantic_annotations: bool = False
 
 
 # ─── Prepare helpers ─────────────────────────────────────────────────────────
@@ -110,9 +135,11 @@ def load_contract(path: str | Path) -> ContractContext:
 
     # Outputs — separate LLM columns from enrichment columns
     outputs: dict[str, OutputSpec] = {}
+    any_semantic = False
     for out_name, spec in contract.get("outputs", {}).items():
         llm_cols: list[ColumnDef] = []
         enrich: dict[str, dict] = {}
+        semantic_cols: dict[str, SemanticColumnSpec] = {}
         for col in spec["schema"]["columns"]:
             if "source" in col:
                 enrich[col["name"]] = col
@@ -124,6 +151,18 @@ def load_contract(path: str | Path) -> ContractContext:
                     aliases=col.get("aliases", []),
                     format=col.get("format"),
                 ))
+
+            # Parse semantic annotations (present on both LLM and enrichment cols)
+            if "concept_uris" in col:
+                any_semantic = True
+                semantic_block = col.get("semantic", {})
+                semantic_cols[col["name"]] = SemanticColumnSpec(
+                    column_name=col["name"],
+                    concept_uris=col["concept_uris"],
+                    resolve_config=col.get("resolve", {}),
+                    validate=semantic_block.get("validate", False),
+                )
+
         schema = CanonicalSchema(
             description=spec["schema"].get("description", ""),
             columns=llm_cols,
@@ -135,6 +174,7 @@ def load_contract(path: str | Path) -> ContractContext:
             schema=schema,
             enrichment=enrich,
             col_specs=spec["schema"]["columns"],
+            semantic_columns=semantic_cols,
         )
 
     return ContractContext(
@@ -145,6 +185,7 @@ def load_contract(path: str | Path) -> ContractContext:
         outputs=outputs,
         report_date_config=report_date_config,
         raw=contract,
+        has_semantic_annotations=any_semantic,
     )
 
 
