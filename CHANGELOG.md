@@ -21,6 +21,13 @@ One entry per significant capability or phase transition.
 
 ## Phase 0: Document Extraction MVP (delivered)
 
+### 2026-02-26 — P5 "The Frankenstein" messy real-world Excel fixtures
+- 4 new heuristics: XH5 (header block detection), XH6 (trailing column trimming via blank-column fence), XH7 (trailing footnote detection), XH8 (aggregation row detection with dual-channel keyword + bold validation)
+- P5 persona: 4 synthetic fixtures (analyst workspace, lookup paradise, dashboard hybrid, living document)
+- Blank data row cleanup for formatting breathing room
+- 34 new tests (607 total), all passing
+- Updated `XLSX_EXTRACTOR.md` with XH5-XH8 documentation
+
 ### 2026-02-26 — XLSX extractor validation and hardening
 - 4 new heuristics: XH1 (multi-table boundary detection), XH2 (title row), XH3 (hidden content filtering), XH4 (number format hints)
 - Merge-based + type-pattern + span-count layered header detection

@@ -9,6 +9,7 @@ Personas:
   P2 "The Merger"       — hierarchical merged headers
   P3 "The Multi-Tasker" — multiple tables per sheet
   P4 "The Formatter"    — visual styling, hidden content, date formats
+  P5 "The Frankenstein" — messy real-world analyst workspaces
 """
 
 from __future__ import annotations
@@ -649,6 +650,287 @@ def build_p4_date_formats() -> None:
 
 
 # ===================================================================
+# P5: "The Frankenstein" — messy real-world analyst workspaces
+# ===================================================================
+
+
+def build_p5_analyst_workspace() -> None:
+    """Report with header block + notes column + footnotes.
+
+    Multi-row annotation block (title, author, date, version) above the table,
+    a notes column with only 1 blank column gap, and footnotes below with
+    only 1 blank row gap.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Revenue"
+
+    # Row 1: Report title (bold, size 16)
+    ws["A1"] = "Q4 2025 Revenue Report"
+    ws["A1"].font = Font(bold=True, size=16)
+
+    # Row 2: Author + date
+    ws["A2"] = "Prepared by: J. Smith"
+    ws["D2"] = "Date: 2025-12-15"
+
+    # Row 3: Department + version
+    ws["A3"] = "Department: Finance"
+    ws["D3"] = "Version: 2.1"
+
+    # Row 4: blank
+
+    # Row 5: Table headers
+    ws["A5"] = "Region"
+    ws["B5"] = "Q1"
+    ws["C5"] = "Q2"
+    ws["D5"] = "Q3"
+    ws["E5"] = "Q4"
+
+    # Column F: blank (1-column gap)
+
+    # Column G: Notes column
+    ws["G5"] = "Notes"
+
+    # Rows 6-10: data + notes
+    data = [
+        ("North", 1500, 1800, 2100, 2400, "On track"),
+        ("South", 1200, 1400, 1600, 1900, "Below target"),
+        ("East", 800, 950, 1100, 1300, "New mgr Q2"),
+        ("West", 2000, 2300, 2600, 3000, "Best region"),
+        ("Central", 600, 700, 850, 1000, "Expanding"),
+    ]
+    for ri, (region, q1, q2, q3, q4, note) in enumerate(data, start=6):
+        ws.cell(row=ri, column=1, value=region)
+        ws.cell(row=ri, column=2, value=q1)
+        ws.cell(row=ri, column=3, value=q2)
+        ws.cell(row=ri, column=4, value=q3)
+        ws.cell(row=ri, column=5, value=q4)
+        # Col F blank
+        ws.cell(row=ri, column=7, value=note)
+
+    # Row 11: blank (1-row gap)
+
+    # Rows 12-13: footnotes
+    ws["A12"] = "* All figures in thousands USD"
+    ws["A13"] = "** East includes new territories from Q3"
+
+    _save(wb, "p5_analyst_workspace")
+
+
+def build_p5_lookup_paradise() -> None:
+    """Data table + reference list + lookups sheet.
+
+    Sheet "Data" has a main employee table (cols A-E) and a reference list
+    (cols H-I) separated by a 2-column gap (F-G). Sheet "Lookups" has
+    dropdown source lists.
+    """
+    wb = Workbook()
+
+    # Sheet 1: Data
+    ws = wb.active
+    ws.title = "Data"
+
+    # Main table: cols A-E
+    ws["A1"] = "Employee"
+    ws["B1"] = "Department"
+    ws["C1"] = "Level"
+    ws["D1"] = "Salary"
+    ws["E1"] = "Start Date"
+
+    employees = [
+        ("Alice Chen", "Engineering", "Senior", 95000, date(2020, 3, 15)),
+        ("Bob Park", "Marketing", "Mid", 72000, date(2021, 7, 1)),
+        ("Carol Liu", "Finance", "Senior", 88000, date(2019, 1, 10)),
+        ("Dave Kim", "Engineering", "Junior", 65000, date(2023, 6, 20)),
+        ("Eva Rossi", "HR", "Mid", 70000, date(2022, 2, 28)),
+        ("Frank Wu", "Marketing", "Senior", 91000, date(2018, 11, 5)),
+        ("Grace Ali", "Engineering", "Mid", 82000, date(2021, 9, 12)),
+    ]
+    for ri, (name, dept, level, sal, dt) in enumerate(employees, start=2):
+        ws.cell(row=ri, column=1, value=name)
+        ws.cell(row=ri, column=2, value=dept)
+        ws.cell(row=ri, column=3, value=level)
+        ws.cell(row=ri, column=4, value=sal)
+        c = ws.cell(row=ri, column=5, value=dt)
+        c.number_format = "YYYY-MM-DD"
+
+    # Cols F-G: blank (2-column gap)
+
+    # Reference list: cols H-I
+    ws["H1"] = "Dept Code"
+    ws["I1"] = "Description"
+    refs = [
+        ("ENG", "Engineering"),
+        ("MKT", "Marketing"),
+        ("FIN", "Finance"),
+        ("HRD", "Human Resources"),
+        ("OPS", "Operations"),
+    ]
+    for ri, (code, desc) in enumerate(refs, start=2):
+        ws.cell(row=ri, column=8, value=code)
+        ws.cell(row=ri, column=9, value=desc)
+
+    # Sheet 2: Lookups
+    ws2 = wb.create_sheet("Lookups")
+    ws2["A1"] = "Department"
+    ws2["B1"] = "Level"
+    depts = ["Engineering", "Marketing", "Finance", "HR", "Operations"]
+    levels = ["Junior", "Mid", "Senior", "Lead", "Director"]
+    for ri, (dept, level) in enumerate(zip(depts, levels), start=2):
+        ws2.cell(row=ri, column=1, value=dept)
+        ws2.cell(row=ri, column=2, value=level)
+
+    _save(wb, "p5_lookup_paradise")
+
+
+def build_p5_dashboard_hybrid() -> None:
+    """KPI summary block + detail table, offset to column B.
+
+    Column A is an empty margin — a common dashboard layout. KPI label-value
+    pairs (rows 3-5) sit above the detail table, separated by 2 blank rows.
+    Tests that heuristics work when data doesn't start at A1.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Dashboard"
+
+    # Row 1: Dashboard title (starts at B, not A)
+    ws["B1"] = "Monthly Performance Dashboard"
+    ws["B1"].font = Font(bold=True, size=16)
+
+    # Row 2: blank
+
+    # Rows 3-5: KPI block (offset by 1 col: B-F instead of A-E)
+    ws["B3"] = "Total Revenue:"
+    ws["C3"] = 125000
+    # Col D blank
+    ws["E3"] = "YoY Growth:"
+    ws["F3"] = "12.5%"
+
+    ws["B4"] = "Total Customers:"
+    ws["C4"] = 3450
+    ws["E4"] = "Churn Rate:"
+    ws["F4"] = "2.1%"
+
+    ws["B5"] = "Active Products:"
+    ws["C5"] = 28
+    ws["E5"] = "NPS Score:"
+    ws["F5"] = 78
+
+    # Rows 6-7: blank (2-row gap → XH1 separator)
+
+    # Row 8: Detail table headers (B-F)
+    ws["B8"] = "Product"
+    ws["C8"] = "Category"
+    ws["D8"] = "Revenue"
+    ws["E8"] = "Units"
+    ws["F8"] = "Margin"
+
+    # Rows 9-14: detail data
+    detail = [
+        ("Widget Pro", "Hardware", 32000, 1200, 0.35),
+        ("DataSync", "Software", 28000, 450, 0.72),
+        ("CloudBox", "SaaS", 25000, 890, 0.68),
+        ("SmartSensor", "Hardware", 18000, 600, 0.42),
+        ("Analytics+", "Software", 15000, 320, 0.78),
+        ("SecureVault", "SaaS", 7000, 180, 0.65),
+    ]
+    for ri, (product, cat, rev, units, margin) in enumerate(detail, start=9):
+        ws.cell(row=ri, column=2, value=product)
+        ws.cell(row=ri, column=3, value=cat)
+        ws.cell(row=ri, column=4, value=rev)
+        ws.cell(row=ri, column=5, value=units)
+        ws.cell(row=ri, column=6, value=margin)
+
+    _save(wb, "p5_dashboard_hybrid")
+
+
+def build_p5_living_document() -> None:
+    """TODOs, dead formulas, TOTAL row, status markers, offset to column B.
+
+    Column A is an empty margin. The project table starts at B1 with a bold
+    TOTAL row, a blank formatting row within data, status markers in col H
+    (1-col gap from main table at F), dead formula errors in col I, and TODO
+    notes below. Tests that XH6/XH8 work with non-A1 anchoring.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Projects"
+
+    # Row 1: headers (B-F instead of A-E)
+    ws["B1"] = "Project"
+    ws["C1"] = "Budget"
+    ws["D1"] = "Spent"
+    ws["E1"] = "Remaining"
+    ws["F1"] = "Status"
+
+    # Rows 2-4: first batch of data
+    batch1 = [
+        ("Alpha", 50000, 42000, 8000, "Active"),
+        ("Beta", 120000, 98000, 22000, "Active"),
+        ("Gamma", 30000, 30000, 0, "Complete"),
+    ]
+    for ri, (proj, budget, spent, rem, status) in enumerate(batch1, start=2):
+        ws.cell(row=ri, column=2, value=proj)
+        ws.cell(row=ri, column=3, value=budget)
+        ws.cell(row=ri, column=4, value=spent)
+        ws.cell(row=ri, column=5, value=rem)
+        ws.cell(row=ri, column=6, value=status)
+
+    # Row 5: blank (formatting space within data — NOT a separator)
+
+    # Rows 6-8: second batch of data
+    batch2 = [
+        ("Delta", 80000, 65000, 15000, "Active"),
+        ("Epsilon", 45000, 35000, 10000, "Active"),
+        ("Zeta", 55000, 28000, 27000, "Planning"),
+    ]
+    for ri, (proj, budget, spent, rem, status) in enumerate(batch2, start=6):
+        ws.cell(row=ri, column=2, value=proj)
+        ws.cell(row=ri, column=3, value=budget)
+        ws.cell(row=ri, column=4, value=spent)
+        ws.cell(row=ri, column=5, value=rem)
+        ws.cell(row=ri, column=6, value=status)
+
+    # Row 9: TOTAL row (bold) — starts at B
+    ws["B9"] = "TOTAL"
+    ws["B9"].font = Font(bold=True)
+    ws["C9"] = 380000
+    ws["C9"].font = Font(bold=True)
+    ws["D9"] = 298000
+    ws["D9"].font = Font(bold=True)
+    ws["E9"] = 82000
+    ws["E9"].font = Font(bold=True)
+
+    # Col G: blank (1-column gap from col F)
+
+    # Col H: status markers (only some rows)
+    ws["H2"] = ">>>"
+    ws["H3"] = ">>>"
+    ws["H4"] = "OK"
+    ws["H6"] = "!!!"
+    ws["H8"] = ">>>"
+
+    # Col I: dead formula errors
+    ws["I2"] = "#REF!"
+    ws["I3"] = "#DIV/0!"
+    ws["I6"] = "#N/A"
+
+    # Rows 10-11: blank (XH1 separator)
+
+    # Row 12-13: TODO notes (at B, not A)
+    ws["B12"] = "TODO: Add Eta project once approved"
+    ws["B13"] = "TODO: Update Gamma final costs"
+
+    # Row 14: blank
+
+    # Row 15: Timestamp
+    ws["B15"] = "Last updated: 2025-12-20"
+
+    _save(wb, "p5_living_document")
+
+
+# ===================================================================
 # Main
 # ===================================================================
 
@@ -678,6 +960,12 @@ if __name__ == "__main__":
     build_p4_banded_report()
     build_p4_hidden_columns()
     build_p4_date_formats()
+
+    # P5: Frankenstein
+    build_p5_analyst_workspace()
+    build_p5_lookup_paradise()
+    build_p5_dashboard_hybrid()
+    build_p5_living_document()
 
     count = len(list(OUT.glob("*.xlsx")))
     print(f"\nDone: {count} files in {OUT}")

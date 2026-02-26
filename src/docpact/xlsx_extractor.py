@@ -700,6 +700,334 @@ def _split_by_blank_runs(
 
 
 # ---------------------------------------------------------------------------
+# XH5: Header Block Detection
+# ---------------------------------------------------------------------------
+
+
+def _detect_header_block(
+    grid: list[list[str]],
+    header_count: int,
+) -> tuple[list[str] | None, list[list[str]], int]:
+    """XH5: Detect a sparse annotation block above the actual table headers.
+
+    Multi-row annotation blocks (title + author + date + version) above the
+    actual table are common in analyst workspaces. These rows have significantly
+    fewer non-empty cells than the actual header/data rows below.
+
+    Algorithm:
+    1. Find the first blank row within the first 8 rows. This blank row
+       separates the annotation block from the table.
+    2. Verify that the rows above the blank row are sparse (≤40% column fill)
+       while the rows below are dense (≥60% column fill).
+    3. If confirmed, strip the annotation block and blank row, adjusting
+       the header count accordingly.
+
+    Unlike XH2 which handles single-cell title rows, XH5 handles multi-row
+    blocks with scattered metadata cells.
+
+    Returns (header_block_lines, adjusted_grid, adjusted_header_count).
+    """
+    if not grid or header_count < 3 or len(grid) < 4:
+        return None, grid, header_count
+
+    num_cols = len(grid[0])
+    if num_cols == 0:
+        return None, grid, header_count
+
+    # Look for a blank row within the first 8 rows of the grid
+    blank_row_idx = -1
+    for i in range(min(8, len(grid))):
+        non_empty = sum(1 for c in grid[i] if c.strip())
+        if non_empty == 0:
+            blank_row_idx = i
+            break
+
+    if blank_row_idx < 1:  # Need at least 1 row above the blank
+        return None, grid, header_count
+
+    # Check: rows above the blank should be sparse
+    above_sparse = True
+    for i in range(blank_row_idx):
+        non_empty = sum(1 for c in grid[i] if c.strip())
+        fill_ratio = non_empty / num_cols
+        if fill_ratio > 0.5:
+            above_sparse = False
+            break
+
+    if not above_sparse:
+        return None, grid, header_count
+
+    # Check: rows below the blank should be denser
+    below_start = blank_row_idx + 1
+    if below_start >= len(grid):
+        return None, grid, header_count
+
+    # Check the first non-blank row below
+    below_non_empty = sum(1 for c in grid[below_start] if c.strip())
+    below_fill = below_non_empty / num_cols
+    if below_fill < 0.5:
+        return None, grid, header_count
+
+    # Confirmed header block: collect lines and strip
+    header_block_lines = []
+    for i in range(blank_row_idx):
+        cells = [c for c in grid[i] if c.strip()]
+        if cells:
+            header_block_lines.append("; ".join(cells))
+
+    # Rows to strip: annotation rows + blank row
+    rows_stripped = blank_row_idx + 1
+    new_grid = grid[rows_stripped:]
+    new_header_count = header_count - rows_stripped
+
+    if new_header_count < 1:
+        new_header_count = 1
+
+    return header_block_lines, new_grid, new_header_count
+
+
+# ---------------------------------------------------------------------------
+# XH6: Trailing Column Trimming
+# ---------------------------------------------------------------------------
+
+
+def _trim_trailing_columns(
+    grid: list[list[str]],
+    header_count: int,
+    styles: list[list[ExcelCellStyle]] | None = None,
+    number_format_hints: list[list[str | None]] | None = None,
+) -> tuple[list[list[str]], list[list[ExcelCellStyle]] | None, list[list[str | None]] | None]:
+    """XH6: Trim trailing columns that are noise (notes, markers, errors).
+
+    After XH1 region detection, tables may include adjacent noise columns
+    that sneak in through the 1-blank-column gap (below the min_blank_cols=2
+    threshold). These are typically notes columns, status markers, or dead
+    formula errors.
+
+    Two-phase algorithm:
+
+    **Phase 1 — Blank-column fence detection**: A completely blank column
+    (empty in ALL rows including headers) acts as a sub-threshold separator.
+    If a blank column exists near an edge and the section beyond it is small
+    (≤40% of total width), trim the blank column and everything beyond it.
+    This handles notes columns with headers (e.g., "Notes") that have a
+    1-blank-column gap from the main table.
+
+    **Phase 2 — Headerless sparse trim**: Scan edges for columns with empty
+    headers and sparse data (<50% of rows populated). Trims from both edges.
+    This handles noise columns with no header that are directly adjacent.
+    """
+    if not grid or not grid[0]:
+        return grid, styles, number_format_hints
+
+    num_cols = len(grid[0])
+    num_rows = len(grid)
+
+    if num_cols <= 1:
+        return grid, styles, number_format_hints
+
+    start_col = 0
+    end_col = num_cols
+
+    # Phase 1: Blank-column fence detection
+    # Find columns that are completely blank (all rows empty)
+    def _is_col_all_blank(ci: int) -> bool:
+        return all(not grid[ri][ci].strip() for ri in range(num_rows))
+
+    # Scan from right for blank-column fence
+    for ci in range(end_col - 1, 0, -1):
+        if _is_col_all_blank(ci):
+            # Found a blank fence column — check if the section to its right
+            # is small enough to be noise (≤40% of total width)
+            section_right = end_col - ci - 1  # columns to the right of fence
+            if section_right >= 0 and (section_right + 1) / num_cols <= 0.4:
+                end_col = ci  # Trim fence + everything to its right
+            break  # Only check the innermost blank column from the right
+
+    # Scan from left for blank-column fence
+    for ci in range(start_col, end_col):
+        if _is_col_all_blank(ci):
+            section_left = ci - start_col
+            if section_left >= 0 and (section_left + 1) / num_cols <= 0.4:
+                start_col = ci + 1
+            break
+
+    # Phase 2: Headerless sparse edge trimming
+    data_start = min(header_count, num_rows)
+    data_row_count = num_rows - data_start
+
+    if data_row_count > 0:
+        # Trim from right edge
+        while end_col > start_col + 1:
+            ci = end_col - 1
+            header_empty = all(
+                not grid[ri][ci].strip()
+                for ri in range(data_start)
+            ) if data_start > 0 else True
+
+            if not header_empty:
+                break
+
+            non_empty_data = sum(
+                1 for ri in range(data_start, num_rows)
+                if grid[ri][ci].strip()
+            )
+            if non_empty_data / data_row_count < 0.5:
+                end_col -= 1
+            else:
+                break
+
+        # Trim from left edge
+        while start_col < end_col - 1:
+            ci = start_col
+            header_empty = all(
+                not grid[ri][ci].strip()
+                for ri in range(data_start)
+            ) if data_start > 0 else True
+
+            if not header_empty:
+                break
+
+            non_empty_data = sum(
+                1 for ri in range(data_start, num_rows)
+                if grid[ri][ci].strip()
+            )
+            if non_empty_data / data_row_count < 0.5:
+                start_col += 1
+            else:
+                break
+
+    if start_col == 0 and end_col == num_cols:
+        return grid, styles, number_format_hints
+
+    new_grid = [row[start_col:end_col] for row in grid]
+
+    new_styles = None
+    if styles:
+        new_styles = [row[start_col:end_col] for row in styles]
+
+    new_hints = None
+    if number_format_hints:
+        new_hints = [row[start_col:end_col] for row in number_format_hints]
+
+    return new_grid, new_styles, new_hints
+
+
+# ---------------------------------------------------------------------------
+# XH7: Trailing Footnote Detection
+# ---------------------------------------------------------------------------
+
+# Footnote marker patterns: lines starting with these are likely footnotes
+_FOOTNOTE_MARKERS = ("*", "**", "***", "Source:", "Note:", "Notes:")
+
+
+def _strip_trailing_footnotes(
+    data_rows: list[list[str]],
+    num_cols: int,
+) -> tuple[list[list[str]], list[str]]:
+    """XH7: Strip footnote rows from the bottom of data.
+
+    Footnote rows (asterisks, Source:, Note:) with only 1 blank-row gap
+    get absorbed into the data when min_blank_rows=2. This scans from
+    the bottom up and strips rows that:
+    1. Have less than 50% of columns filled, AND
+    2. The first non-empty cell starts with a footnote marker.
+
+    Returns (cleaned_data_rows, footnote_lines).
+    """
+    if not data_rows:
+        return data_rows, []
+
+    footnotes: list[str] = []
+    trim_count = 0
+
+    for i in range(len(data_rows) - 1, -1, -1):
+        row = data_rows[i]
+        non_empty = [c for c in row if c.strip()]
+        fill_ratio = len(non_empty) / num_cols if num_cols > 0 else 0
+
+        # Blank rows at the bottom: skip them
+        if not non_empty:
+            trim_count += 1
+            continue
+
+        # Sparse row with footnote marker
+        if fill_ratio < 0.5:
+            first_cell = non_empty[0].strip()
+            is_footnote = any(first_cell.startswith(m) for m in _FOOTNOTE_MARKERS)
+            if is_footnote:
+                footnotes.append(first_cell)
+                trim_count += 1
+                continue
+
+        # Row doesn't match footnote pattern — stop scanning
+        break
+
+    if trim_count == 0:
+        return data_rows, []
+
+    footnotes.reverse()  # Restore original order
+    return data_rows[:len(data_rows) - trim_count], footnotes
+
+
+# ---------------------------------------------------------------------------
+# XH8: Aggregation Row Detection
+# ---------------------------------------------------------------------------
+
+_AGGREGATION_KEYWORDS = {
+    "total", "totals", "sum", "grand total", "subtotal",
+    "average", "avg", "mean",
+}
+
+
+def _strip_aggregation_rows(
+    data_rows: list[list[str]],
+    styles: list[list[ExcelCellStyle]] | None,
+    header_count: int,
+) -> tuple[list[list[str]], list[list[str]]]:
+    """XH8: Strip aggregation rows (TOTAL, Sum, etc.) from data.
+
+    An aggregation row is identified by dual-channel validation:
+    1. First cell matches a summary keyword (case-insensitive exact match), AND
+    2. The row has bold formatting (dual-channel: text + visual).
+
+    Without bold formatting, a row with first cell "Total" could be a legitimate
+    data record (e.g., a company named "Total" or a product named "Total").
+    The bold requirement prevents false positives.
+
+    Only checks the last data row (aggregation rows are at the bottom).
+    Returns (cleaned_data_rows, aggregation_rows).
+    """
+    if not data_rows:
+        return data_rows, []
+
+    aggregation_rows: list[list[str]] = []
+
+    # Check last row
+    last_idx = len(data_rows) - 1
+    last_row = data_rows[last_idx]
+
+    first_cell = last_row[0].strip().lower() if last_row and last_row[0] else ""
+
+    if first_cell not in _AGGREGATION_KEYWORDS:
+        return data_rows, []
+
+    # Check bold formatting (dual-channel validation)
+    is_bold = False
+    if styles:
+        # The style index for the last data row accounts for header rows
+        style_idx = header_count + last_idx
+        if style_idx < len(styles) and styles[style_idx]:
+            is_bold = styles[style_idx][0].font_bold
+
+    if not is_bold:
+        return data_rows, []
+
+    aggregation_rows.append(data_rows[last_idx])
+    return data_rows[:last_idx], aggregation_rows
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -792,6 +1120,16 @@ def extract_tables_from_xlsx(
             # Normalize grid
             grid = normalize_grid(excel_table.grid)
 
+            # XH6: Trim trailing/leading noise columns (notes, markers, errors)
+            grid, trimmed_styles, trimmed_hints = _trim_trailing_columns(
+                grid,
+                header_count=1,  # Preliminary: assume at least 1 header row
+                styles=excel_table.styles,
+                number_format_hints=excel_table.number_format_hints,
+            )
+            excel_table.styles = trimmed_styles
+            excel_table.number_format_hints = trimmed_hints
+
             # Estimate header rows — layered approach:
             # 1. Visual fill (if available and clear)
             # 2. Merge-based detection (last merge row + type continuation)
@@ -813,6 +1151,11 @@ def extract_tables_from_xlsx(
                 # Take the maximum — each method catches cases others miss
                 header_count = max(merge_count, type_count, span_count)
 
+            # XH5: Header block detection (multi-row annotation above table)
+            header_block, grid, header_count = _detect_header_block(
+                grid, header_count,
+            )
+
             # XH2: Title row detection
             title, grid, header_count = _detect_title_row(grid, header_count)
 
@@ -827,11 +1170,27 @@ def extract_tables_from_xlsx(
             while len(column_names) < num_cols:
                 column_names.append("")
 
+            # XH7: Strip trailing footnotes from data
+            data_rows, footnotes = _strip_trailing_footnotes(data_rows, num_cols)
+
+            # XH8: Strip aggregation rows (TOTAL, Sum, etc.)
+            data_rows, aggregation_rows = _strip_aggregation_rows(
+                data_rows, excel_table.styles, header_count + (1 if title else 0) + (len(header_block) + 1 if header_block else 0),
+            )
+
+            # Remove completely blank data rows (formatting breathing room)
+            data_rows = [
+                row for row in data_rows
+                if any(c.strip() for c in row)
+            ]
+
             # XH4: Collect number format hints for the table
             format_hints: dict[int, str] = {}
             if excel_table.number_format_hints:
                 # Check first data row for format hints per column
                 hint_start = header_count + (1 if title else 0)
+                if header_block:
+                    hint_start += len(header_block) + 1
                 if hint_start < len(excel_table.number_format_hints):
                     for ci, hint in enumerate(excel_table.number_format_hints[hint_start]):
                         if hint:
@@ -845,6 +1204,12 @@ def extract_tables_from_xlsx(
             }
             if title:
                 meta_dict["title"] = title
+            if header_block:
+                meta_dict["header_block"] = header_block  # type: ignore[assignment]
+            if footnotes:
+                meta_dict["footnotes"] = footnotes  # type: ignore[assignment]
+            if aggregation_rows:
+                meta_dict["aggregation_rows"] = aggregation_rows  # type: ignore[assignment]
             if format_hints:
                 meta_dict["format_hints"] = format_hints  # type: ignore[assignment]
 

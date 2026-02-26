@@ -13,6 +13,7 @@ XLSX tables have explicit grid structure (cells at known row/column positions), 
 - **Multiple tables per sheet**: Authors place several tables on one worksheet, separated by blank rows/columns
 - **Hidden content**: Columns or rows may be hidden (formulas, intermediate calculations) but still present in the file
 - **Number formats**: The same value can be displayed as a date, currency, or percentage depending on the cell's format string
+- **Workspace noise**: Header blocks, footnotes, notes columns, status markers, dead formulas, TOTAL rows — real analysts use Excel as a living ecosystem
 
 ## Pipeline
 
@@ -41,7 +42,12 @@ XLSX file
    -- Extract visual styles (optional)
   |
   v
-5. Estimate header rows (layered approach)
+5. XH6: Trim trailing/leading noise columns (_trim_trailing_columns)
+   -- Phase 1: Blank-column fence detection (sub-threshold separators)
+   -- Phase 2: Headerless sparse edge trimming
+  |
+  v
+6. Estimate header rows (layered approach)
    -- Merge-based: last horizontal merge row + type continuation
    -- Type-pattern: consecutive all-string rows (TH2)
    -- Span-count: bottom-up H7 analysis
@@ -49,19 +55,38 @@ XLSX file
    -- Take maximum across all methods
   |
   v
-6. XH2: Detect title row
+7. XH5: Detect header block (_detect_header_block)
+   -- Sparse annotation rows above table (title, author, date)
+   -- Strip and store in metadata["header_block"]
+  |
+  v
+8. XH2: Detect title row
    -- Single non-empty cell in row 0 with header_count > 1
    -- Extract as metadata, exclude from headers
   |
   v
-7. Build compound headers (_build_column_names_with_forward_fill)
+9. Build compound headers (_build_column_names_with_forward_fill)
    -- Forward-fill empty cells in each header row
    -- Stack rows with " / " separator
    -- Deduplicate consecutive identical fragments
   |
   v
-8. Return StructuredTable objects
-   -- column_names, data, source_format="xlsx", metadata
+10. XH7: Strip trailing footnotes (_strip_trailing_footnotes)
+    -- Bottom-up scan for sparse rows with footnote markers (*, Source:, Note:)
+    -- Store in metadata["footnotes"]
+  |
+  v
+11. XH8: Strip aggregation rows (_strip_aggregation_rows)
+    -- Last data row with summary keyword (TOTAL, Sum, etc.) + bold formatting
+    -- Dual-channel validation prevents false positives
+    -- Store in metadata["aggregation_rows"]
+  |
+  v
+12. Remove blank formatting rows (breathing room within data)
+  |
+  v
+13. Return StructuredTable objects
+    -- column_names, data, source_format="xlsx", metadata
 ```
 
 ---
@@ -120,6 +145,67 @@ Format hints are stored in `metadata["format_hints"]` as a `dict[int, str]` mapp
 
 ---
 
+### XH5: Header Block Detection (`_detect_header_block`)
+
+**Problem**: Analyst workspaces often have multi-row annotation blocks above the actual table — report titles, author names, dates, version numbers. These sparse rows get absorbed into the header when only separated by a single blank row (below XH1's `min_blank_rows=2` threshold).
+
+**Solution**: After header estimation, check if the first N rows (before a blank row) are significantly sparser than the rows below:
+
+1. Find the first blank row within the top 8 rows.
+2. Verify rows above the blank have ≤50% column fill (sparse annotation).
+3. Verify the first row below has ≥50% column fill (dense table header).
+4. If confirmed, strip the annotation block + blank row. Store text in `metadata["header_block"]`.
+
+**Activation**: Only runs when `header_count ≥ 3` (to avoid interfering with XH2's single-title detection).
+
+**Rationale**: A header block has scattered metadata cells (title in A1, author in A2, date in D2) that never fill most columns. Real table headers fill most columns because each column needs a label.
+
+---
+
+### XH6: Trailing Column Trimming (`_trim_trailing_columns`)
+
+**Problem**: Notes columns, status markers, and dead formula errors sneak into the table through 1-blank-column gaps (below XH1's `min_blank_cols=2` threshold). Can't lower `min_blank_cols` globally — that would break P3 side-by-side tables.
+
+**Solution**: Two-phase edge trimming after region detection:
+
+**Phase 1 — Blank-column fence**: A completely blank column (empty in ALL rows) acts as a sub-threshold separator. If a blank column exists near an edge and the section beyond it is small (≤40% of total width), trim the blank column and everything beyond it. This handles notes columns with proper headers (e.g., "Notes") that are separated by a blank column gap.
+
+**Phase 2 — Headerless sparse trim**: Scan edges for columns with empty headers AND sparse data (<50% of rows populated). Trims from both left and right edges.
+
+**Safety**: Never removes internal columns. Phase 1's 40% width threshold prevents trimming legitimate internal blank columns (which would split the table roughly in half).
+
+---
+
+### XH7: Trailing Footnote Detection (`_strip_trailing_footnotes`)
+
+**Problem**: Footnote rows below data (with only 1 blank-row gap) get included as data rows when `min_blank_rows=2`. Can't lower `min_blank_rows` — it would break within-table breathing room.
+
+**Solution**: After splitting headers from data, scan data rows from bottom up. Strip rows that:
+
+1. Have <50% of columns filled (sparse), AND
+2. The first non-empty cell starts with a footnote marker (`*`, `**`, `Source:`, `Note:`, `Notes:`).
+
+Stripped footnotes are stored in `metadata["footnotes"]`.
+
+**Safety**: Rows that don't start with a recognized footnote marker are kept, even if sparse. This prevents stripping legitimate sparse data rows.
+
+---
+
+### XH8: Aggregation Row Detection (`_strip_aggregation_rows`)
+
+**Problem**: Bold TOTAL/Sum rows are extracted as regular data records, polluting the output with summary values that duplicate the data.
+
+**Solution**: Dual-channel validation on the last data row:
+
+1. **Text channel**: First cell matches a summary keyword (case-insensitive exact match): `total`, `totals`, `sum`, `grand total`, `subtotal`, `average`, `avg`, `mean`.
+2. **Visual channel**: The row has bold formatting.
+
+Both channels must agree. Without bold formatting, a row with "Total" could be a legitimate data record (e.g., a company named "Total" or a project named "Total"). The bold requirement prevents false positives.
+
+Stripped aggregation rows are stored in `metadata["aggregation_rows"]`.
+
+---
+
 ### Merge-Based Header Detection (`_estimate_header_rows_from_merges`)
 
 **Problem**: Generic header estimators (`estimate_header_rows`, `estimate_header_rows_from_types`) can miss or under-count headers in XLSX files with merged cells.
@@ -161,6 +247,9 @@ Metadata fields per table:
 | `table_index` | `int` | Table position within the sheet |
 | `sheet_name` | `str` | Sheet name |
 | `title` | `str` | XH2: Extracted title (if detected) |
+| `header_block` | `list[str]` | XH5: Annotation block lines (if detected) |
+| `footnotes` | `list[str]` | XH7: Stripped footnote lines (if detected) |
+| `aggregation_rows` | `list[list[str]]` | XH8: Stripped summary rows (if detected) |
 | `format_hints` | `dict[int, str]` | XH4: Column index → format hint |
 
 ### `extract_tables_from_excel()`
@@ -181,7 +270,7 @@ When `extract_styles=True`, per-cell visual information is captured:
 | --- | --- | --- |
 | Fill color | `cell.fill.fgColor` | VH2: Header fill detection |
 | Borders | `cell.border.*` | VH1: Grid structure |
-| Bold | `cell.font.bold` | VH2: Header emphasis |
+| Bold | `cell.font.bold` | VH2: Header emphasis, XH8: Aggregation detection |
 | Italic | `cell.font.italic` | Metadata detection |
 | Font size | `cell.font.size` | Hierarchy detection |
 | Font color | `cell.font.color` | VH5: Conditional formatting |
@@ -198,7 +287,7 @@ Visual info feeds into `_analyze_visual_structure()` which detects:
 
 ### XLSX tests (`tests/test_xlsx_extractor.py`)
 
-52 tests covering the XLSX extraction pipeline:
+86 tests covering the XLSX extraction pipeline:
 
 | Test Group | Count | Verifies |
 | --- | --- | --- |
@@ -206,17 +295,22 @@ Visual info feeds into `_analyze_visual_structure()` which detects:
 | P2: Merger | 5 | Compound headers, deep hierarchy, cross-tab, irregular merges |
 | P3: Multi-Tasker | 7 | Blank-row split, titles, footnotes, side-by-side, indices |
 | P4: Formatter | 6 | KPI dashboard, banded report, hidden cols, date formats |
+| P5: Frankenstein | 22 | Header blocks, notes, footnotes, lookups, KPI, TOTAL, markers, errors |
 | XH1 unit tests | 6 | `_split_by_blank_runs` edge cases |
 | XH2 unit tests | 3 | Title detection conditions |
+| XH5 unit tests | 3 | Header block detection, normal header passthrough |
+| XH6 unit tests | 3 | Blank-column fence, headerless sparse, internal blank |
+| XH7 unit tests | 3 | Asterisk footnote, Source: footnote, non-footnote sparse |
+| XH8 unit tests | 3 | Bold total excluded, non-bold kept, mid-table kept |
 | Forward-fill unit tests | 6 | Single/multi-row, dedup, hierarchy |
 | XH4 unit tests | 6 | Number format classification |
 | Markdown rendering | 2 | `xlsx_to_markdown` output |
-| Smoke tests | 2 | All 16 fixtures extract with data |
+| Smoke tests | 2 | All 20 fixtures extract with data |
 | Error handling | 2 | FileNotFoundError, invalid sheet names |
 
 ### Synthetic fixtures (`inputs/xlsx/synthetic/`)
 
-16 programmatically generated .xlsx files covering 4 persona archetypes:
+20 programmatically generated .xlsx files covering 5 persona archetypes:
 
 | Persona | Files | Structural Focus |
 | --- | --- | --- |
@@ -224,6 +318,7 @@ Visual info feeds into `_analyze_visual_structure()` which detects:
 | P2: The Merger | 4 | 2-row, 3-row, cross-tab, irregular merges |
 | P3: The Multi-Tasker | 4 | Blank-row gaps, titles, footnotes, side-by-side |
 | P4: The Formatter | 4 | Conditional formatting, zebra rows, hidden cols, date formats |
+| P5: The Frankenstein | 4 | Header blocks, notes columns, footnotes, lookups, KPI dashboards, TOTAL rows, status markers, dead formulas |
 
 Generator: `tests/generate_synthetic_xlsx.py`
 
