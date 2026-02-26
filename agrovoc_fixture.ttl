@@ -1,0 +1,49 @@
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+
+<http://aims.fao.org/aos/agrovoc/c_1094> skos:prefLabel "buckwheat"@en,
+        "гречиха"@ru .
+
+<http://aims.fao.org/aos/agrovoc/c_12332> skos:altLabel "corn"@en ;
+    skos:prefLabel "maize"@en,
+        "кукуруза"@ru .
+
+<http://aims.fao.org/aos/agrovoc/c_14477> skos:altLabel "soya"@en,
+        "soybean"@en ;
+    skos:prefLabel "soyabeans"@en,
+        "соевые бобы"@ru .
+
+<http://aims.fao.org/aos/agrovoc/c_330918> skos:prefLabel "area harvested"@en,
+        "убранная площадь"@ru .
+
+<http://aims.fao.org/aos/agrovoc/c_3486> skos:altLabel "collected"@en ;
+    skos:prefLabel "harvesting"@en,
+        "уборка урожая"@ru .
+
+<http://aims.fao.org/aos/agrovoc/c_5765> skos:altLabel "yield"@en ;
+    skos:prefLabel "crop yield"@en,
+        "урожайность"@ru .
+
+<http://aims.fao.org/aos/agrovoc/c_631> skos:altLabel "barleycorn"@en ;
+    skos:prefLabel "barley"@en,
+        "ячмень"@ru .
+
+<http://aims.fao.org/aos/agrovoc/c_6476> skos:altLabel "canola"@en,
+        "rape"@en ;
+    skos:prefLabel "rapeseed"@en,
+        "рапс"@ru .
+
+<http://aims.fao.org/aos/agrovoc/c_6599> skos:prefLabel "rice"@en,
+        "рис"@ru .
+
+<http://aims.fao.org/aos/agrovoc/c_7440> skos:altLabel "sunflower"@en ;
+    skos:prefLabel "sunflowers"@en,
+        "подсолнечник"@ru .
+
+<http://aims.fao.org/aos/agrovoc/c_8373> skos:altLabel "common wheat"@en ;
+    skos:narrower <http://aims.fao.org/aos/agrovoc/c_33556> ;
+    skos:prefLabel "wheat"@en,
+        "пшеница"@ru .
+
+<http://aims.fao.org/aos/agrovoc/c_33556> skos:prefLabel "durum wheat"@en,
+        "твёрдая пшеница"@ru .
+
