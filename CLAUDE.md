@@ -22,9 +22,111 @@ Core rules:
 
 This is the standard. When in doubt, choose the more principled path — even if it means leaving a known issue open until we find the right general solution.
 
+## CK-IR Specification Authority
+
+docpact is the reference implementation of CK-IR (Canonical Knowledge Intermediate Representation).
+The normative specification lives in a separate repository.
+
+- **Spec repo:** `/Volumes/WD Green/dev/git/ckir/ckir/`
+- **Spec version:** Formal Spec v0.2 (Draft — Normative)
+- **Conformance:** Level 2 (Deterministic) complete + partial Level 3 (Semantic)
+- **Authority rule:** When this CLAUDE.md and the ckir spec disagree, the ckir spec is normative.
+  If the implementation needs the spec to change, the change must happen in ckir first.
+
+### Current Phase
+
+> **Phase 1: Semantic Contracts — IN PROGRESS**
+>
+> Do not implement Phase 1.5+ features. If an idea belongs to a later phase,
+> note it in a GitHub issue tagged with the phase number and move on.
+>
+> Phase 1 acceptance criteria (from ckir roadmap):
+> 1. Add new region → GeoNames produces bilingual aliases automatically
+> 2. SHACL validation flags values outside known concepts
+> 3. Alias diff coverage ≥ 90%
+> 4. Every alias traces to a concept URI
+
+### Spec File Reference
+
+| Spec File | Purpose | Governs |
+|---|---|---|
+| `specs/formal-spec-v0.2.md` | Normative CK-IR spec (RFC 2119 language) | All of `src/docpact/` |
+| `specs/contract-schema.md` | Contract JSON format reference | `contracts.py`, contract JSON files |
+| `specs/canonical-schema-reference.md` | ColumnDef model spec | `contracts.py`, `serialize.py`, `interpret.py` |
+| `specs/jsonld-contract-format.md` | JSON-LD authoring format (Phase 1.5) | Future: `ckir compile` command |
+| `architecture/blueprint.md` | 6-layer architecture + module map | Overall `src/docpact/` structure |
+| `architecture/data-flows.md` | End-to-end document processing | Pipeline stage boundaries |
+| `architecture/semantic-brain.md` | Semantic orchestration vision | `semantics.py`, `tools/contract-semantics/` |
+| `strategy/roadmap.md` | 5-phase roadmap with acceptance criteria | What to build next |
+| `strategy/repo-ecosystem.md` | 3-repo model, trigger maps, sync conventions | Cross-repo coordination |
+
+All paths relative to `/Volumes/WD Green/dev/git/ckir/ckir/`.
+
+### Spec Awareness Protocol
+
+Rules for when Claude Code must consult ckir:
+
+- **Before any architectural change:** Read `formal-spec-v0.2.md` (Sections 3-4) + `blueprint.md`
+- **Module-specific rules:**
+  - `interpret.py` → formal spec §4.2-4.5, §4.7
+  - `classify.py` → formal spec §4.1
+  - `contracts.py` → `contract-schema.md` + `canonical-schema-reference.md`
+  - `serialize.py` → formal spec §4.9
+  - `unpivot.py` → formal spec §4.8
+  - `semantics.py` / `tools/contract-semantics/` → `semantic-brain.md`
+  - Contract JSON edits → `contract-schema.md`
+- **Before Phase 1.5+ work:** Read `roadmap.md` + `jsonld-contract-format.md`
+- **When proposing new heuristics:** Verify against spec MUST/SHOULD/MAY requirements
+- **Before any significant design decision:** Check `ckir/decisions/` for existing ADRs on the topic
+
+### Roadmap Phase Tracking
+
+| Phase | Name | ckir Status | docpact Status | Key Modules |
+|---|---|---|---|---|
+| 0 | Document Extraction MVP | DELIVERED | Complete | `interpret.py`, `compress.py`, `classify.py`, `serialize.py`, `pipeline.py` |
+| 1 | Semantic Contracts | IN PROGRESS | In progress | `semantics.py`, `contracts.py`, `tools/contract-semantics/` |
+| 1.5 | JSON-LD Contract Authoring | PLANNED | Not started | Future: compiler command |
+| 2 | Contract Governance | PLANNED | Not started | Future: versioning, testing framework |
+| 3 | Platform Services | PLANNED | Not started | Future: REST API, observability |
+| 4 | Knowledge Graph | FUTURE | Not started | Future: RDF graph, SPARQL |
+
+## Development Pattern
+
+### Architecture Decision Records (ADRs)
+
+Significant design decisions are recorded in `ckir/decisions/` as lightweight markdown files.
+Before proposing an alternative to an existing approach, read the relevant ADR to understand
+why the current approach was chosen.
+
+ADR format:
+- File: `decisions/NNN-short-title.md`
+- Sections: Status, Context, Decision, Consequences
+- Written when: a design choice affects multiple modules, reverses a previous approach,
+  or involves a non-obvious tradeoff
+
+### Cross-Repo Sync Conventions
+
+- Phase completion → update Roadmap Phase Tracking table above + CHANGELOG.md entry
+- Spec-impacting changes → spec must be updated in ckir first
+- Never introduce behavior the formal spec prohibits
+- Verify features against ckir `examples/` worked examples
+- Significant design decision → write ADR in ckir before implementing
+- Check ckir `strategy/repo-ecosystem.md` trigger map at phase transitions
+
+### Changelog
+
+`CHANGELOG.md` tracks milestone-level progress. One entry per significant capability or
+phase transition. Not per-commit — per-milestone. Format:
+
+    ## Phase 1: Semantic Contracts (in progress)
+    ### 2026-02-26 — Semantic-aware pipeline
+    - SemanticContext, preflight checks, post-extraction validation
+    - build_semantic_context() bridge builder
+    - 47 new tests, all 521 tests passing
+
 ## Project Overview
 
-PDF-OCR is a Python project that uses BAML (BoundaryML) to extract structured data from PDF documents via LLMs. It combines PyMuPDF for PDF parsing with LLM providers (OpenAI, Anthropic) for intelligent data extraction.
+docpact is the reference implementation of CK-IR (Canonical Knowledge Intermediate Representation), a specification for transforming unstructured documents (PDF, DOCX, XLSX, PPTX, HTML) into typed, schema-conformant records through declarative JSON contracts. It combines format-specific extractors (PyMuPDF for PDF, python-docx for DOCX, openpyxl for XLSX) with a deterministic-first interpretation pipeline and LLM fallback via BAML.
 
 ## Commands
 
@@ -47,20 +149,41 @@ LLM API keys must be set depending on which client is used:
 
 ## Architecture
 
-### Source Package (`src/docpact/`)
+### Source Package (`src/docpact/`) — 6-Layer Architecture
 
 All application code lives here following the standard Python src layout.
 
 - **`__init__.py`** — Package root, re-exports public API.
+
+**Layer 1: Extraction**
+
 - **`spatial_text.py`** — Spatial PDF-to-text renderer. Converts each PDF page into a monospace text grid preserving columns, tables, and scattered text at their correct visual positions. Public function: `pdf_to_spatial_text(pdf_path, *, pages, cluster_threshold, page_separator)`. Also exports `PageLayout` dataclass and `_extract_page_layout()` helper used by `compress.py`.
 - **`compress.py`** — Compressed spatial text for LLM consumption. Classifies page regions (tables, text blocks, headings, key-value pairs, scattered) and renders them as markdown tables, flowing paragraphs, and structured key-value lines. Multi-row stacked headers are joined with ` / ` separators (matching the DOCX extractor convention) to enable deterministic compound header parsing. Supports multi-row record merging for shipping stems. Public function: `compress_spatial_text(pdf_path, *, pages, cluster_threshold, page_separator, table_format, merge_multi_row, min_table_rows)`.
-- **`interpret.py`** — Table interpretation pipeline with **deterministic-first architecture**: tries alias-based mapping before any LLM call. The deterministic path runs two detectors per page in order: (1) **transposed table detection** (`_try_deterministic_transposed`) for tables where field labels are rows and data columns are records (e.g., 2 vessels per page with labels in column 0), and (2) **flat table detection** (`_try_deterministic`) for standard row-per-record tables. Alias matching uses `_normalize_for_alias_match()` which normalizes case, whitespace, parenthesis spacing, and strips double-quotes to handle OCR/formatting variation (e.g., `"Quantity(tonnes)"` matches alias `"Quantity (tonnes)"`). A **comma-suffix fallback** strips unit annotations after commas when the full string has no alias match (e.g., `"Area harvested,Th.ha."` → tries `"Area harvested"`). A **joined-form fallback** tries the space-joined form when all parts of a compound header are individually unmatched (e.g., `"Quantity / (tonnes)"` → `"Quantity (tonnes)"`). **Title-to-schema matching** (Phase 2.3) assigns the table title as a constant dimension when it matches a string-type schema column's alias — tries full-text match first, then word-boundary substring fallback (e.g., title "Winter sowing of grains and grasses" contains alias "grains and grasses"). **Blank-header text-column inference** (Phase 2.5) assigns columns with empty headers but text data to unmatched string-type schema columns when exactly one of each exists (accounting for title-matched columns). Columns where every header part (split on ` / `) matches a schema alias are mapped via string matching with zero LLM calls; columns with NO matching alias parts are silently dropped (the contract defines what data we want, not an inventory of everything in the document). **Multi-section tables** with per-section re-headers (different column counts per section) are handled by column remapping: when a section's re-header has a different layout from the global header, named columns are matched and data rows are remapped to the global column order. Section labels (plain text or bold markers) are mapped to schema columns when they match aliases (e.g., port names as `load_port` aliases). Falls back to the LLM pipeline only when no measures or groups can be resolved at all. LLM path: 2-step (parse then map) and single-shot modes, with auto page-splitting, **pre-step-1 table splitting** for large tables (`step1_max_rows=40`, prevents LLM output truncation on 65+ row tables), batched step 2, and async concurrency. Supports an optional **vision-based schema inference** mode for PDFs with garbled/concatenated headers: pass `pdf_path=` to `interpret_table()` to render pages as images and use a vision LLM to infer column structure before parsing. Includes **deterministic section boundary validation**: after the LLM parses table structure (step 1), Python code counts pipe-table data rows per section directly from the compressed text and corrects any miscounted boundaries before batching. The **`UnpivotStrategy`** enum (`SCHEMA_AGNOSTIC`, `DETERMINISTIC`, `NONE`) controls how pivoted tables are handled: `SCHEMA_AGNOSTIC` pre-unpivots for the LLM via `unpivot.py`, `DETERMINISTIC` lets the deterministic mapper handle pivots and sends the original to the LLM, `NONE` skips all pivot handling. The `unpivot` parameter on all entry points accepts both the enum and `bool` for backward compatibility (`True` → `SCHEMA_AGNOSTIC`, `False` → `NONE`). Key public functions: `interpret_table()`, `interpret_table_single_shot()`, `infer_table_schema_from_image()`, `to_records()`, `to_records_by_page()`.
-- **`serialize.py`** — Serialization module for exporting `interpret_table()` results to various formats. Validates records against the CanonicalSchema using Pydantic before serialization, with automatic coercion of OCR artifacts (e.g., `"1,234"` → `1234`, `"(500)"` → `-500`). Applies output formatting from `ColumnDef.format` field — supports date/time patterns (`YYYY-MM-DD`, `HH:mm`), number patterns (`#,###.##`, `+#`, `#%`), and string case transformations (`uppercase`, `camelCase`, `snake_case`, etc.). Public functions: `to_csv(result, schema, *, path=None, include_page=False)`, `to_tsv(...)`, `to_parquet(result, schema, path, *, include_page=False)`, `to_pandas(...)`, `to_polars(...)`. Optional dependencies: `pip install docpact[dataframes]` for pandas/polars, `pip install docpact[parquet]` for Parquet support.
-- **`normalize.py`** — Centralized pipe-table text normalization. Single function `normalize_pipe_table(text)` that applies lossless, idempotent normalizations to pipe-table markdown: NBSP → space, smart quotes → ASCII, en/em-dash → hyphen, zero-width character removal, whitespace collapse, trailing whitespace strip. Applied automatically at entry points of `classify_tables()`, `interpret_table()`, `interpret_table_single_shot()`, `interpret_table_async()`, and `interpret_tables_async()`.
-- **`unpivot.py`** — Schema-agnostic deterministic pivot detection and unpivoting for pipe-tables. Detects repeating compound header groups (e.g. `"crop A / 2025"`, `"crop B / 2025"`) by splitting on ` / `, grouping by prefix, and fuzzy-matching suffix lists across groups using `rapidfuzz.fuzz.ratio()`. When ≥2 groups share ≥2 matching suffixes, transforms the wide pivoted table into long format with a `_pivot` column containing the group prefix. Non-matching groups (e.g. `"Th.ha. / Region"`) become shared columns. Runs as a pre-processing step before the LLM path only (the deterministic mapper handles pivoted tables natively via alias-based group detection, so unpivoting is applied after the deterministic attempt fails). Public functions: `unpivot_pipe_table(text, *, similarity_threshold, min_groups, pivot_column_name)`, `detect_pivot(text, *, similarity_threshold, min_groups)`.
+- **`docx_extractor.py`** — DOCX table extractor. Handles `_tc` deduplication for merged cells, gridSpan/vMerge expansion, merge-based header detection, title row extraction, and boundary-aware forward-fill. Per-module docs in `DOCX_EXTRACTOR.md`.
+- **`xlsx_extractor.py`** — XLSX/XLS table extractor. Four XLSX-specific heuristics: **XH1** (blank-row/column table boundary detection — resolves multi-table-per-sheet via `_detect_table_regions()`), **XH2** (title row detection), **XH3** (hidden row/column filtering via `ws.column_dimensions[col].hidden`), **XH4** (number format interpretation for date/currency/percentage hints). Uses layered header detection: merge-based (horizontal merges + type continuation), type-pattern (TH2), and span-count (H7), taking the maximum. Forward-fill compound headers via `_build_column_names_with_forward_fill()`. Public functions: `extract_tables_from_xlsx()`, `extract_tables_from_excel()`, `xlsx_to_markdown()`. 52 tests, 16 synthetic fixtures. Per-module docs in `XLSX_EXTRACTOR.md`.
+- **`pptx_extractor.py`**, **`html_extractor.py`** — Format-specific document extractors (untested, pending persona-driven validation per ADR-003).
+
+**Layer 2: Classification**
+
 - **`classify.py`** — Format-agnostic table classification. Operates on `list[tuple[str, dict]]` — the compressed pipe-table markdown + metadata tuples produced by both `compress_docx_tables()` (DOCX) and `StructuredTable.to_compressed()` (PDF). Three-layer approach: (1) word-boundary keyword scoring against header text with English suffix tolerance, (2) `min_data_rows` filtering, (3) optional similarity propagation from matched to unmatched tables. The ` / ` compound header separator is collapsed before matching so multi-word keywords like `"area harvested"` work on compound headers like `"Area / harvested / 2025"`. Public function: `classify_tables(tables, categories, *, min_data_rows, propagate, propagate_threshold)`. Also exports `_YEAR_RE` (used by `docx_extractor.py` for pivot value extraction) and helpers `_keyword_matches`, `_compute_similarity`, `_parse_pipe_header`, `_tokenize_header_text`.
+
+**Layer 3: Interpretation**
+
+- **`interpret.py`** — Table interpretation pipeline with **deterministic-first architecture**: tries alias-based mapping before any LLM call. The deterministic path runs two detectors per page in order: (1) **transposed table detection** (`_try_deterministic_transposed`) for tables where field labels are rows and data columns are records (e.g., 2 vessels per page with labels in column 0), and (2) **flat table detection** (`_try_deterministic`) for standard row-per-record tables. Alias matching uses `_normalize_for_alias_match()` which normalizes case, whitespace, parenthesis spacing, and strips double-quotes to handle OCR/formatting variation (e.g., `"Quantity(tonnes)"` matches alias `"Quantity (tonnes)"`). A **comma-suffix fallback** strips unit annotations after commas when the full string has no alias match (e.g., `"Area harvested,Th.ha."` → tries `"Area harvested"`). A **joined-form fallback** tries the space-joined form when all parts of a compound header are individually unmatched (e.g., `"Quantity / (tonnes)"` → `"Quantity (tonnes)"`). **Title-to-schema matching** (Phase 2.3) assigns the table title as a constant dimension when it matches a string-type schema column's alias — tries full-text match first, then word-boundary substring fallback (e.g., title "Winter sowing of grains and grasses" contains alias "grains and grasses"). **Blank-header text-column inference** (Phase 2.5) assigns columns with empty headers but text data to unmatched string-type schema columns when exactly one of each exists (accounting for title-matched columns). Columns where every header part (split on ` / `) matches a schema alias are mapped via string matching with zero LLM calls; columns with NO matching alias parts are silently dropped (the contract defines what data we want, not an inventory of everything in the document). **Multi-section tables** with per-section re-headers (different column counts per section) are handled by column remapping: when a section's re-header has a different layout from the global header, named columns are matched and data rows are remapped to the global column order. Section labels (plain text or bold markers) are mapped to schema columns when they match aliases (e.g., port names as `load_port` aliases). Falls back to the LLM pipeline only when no measures or groups can be resolved at all. LLM path: 2-step (parse then map) and single-shot modes, with auto page-splitting, **pre-step-1 table splitting** for large tables (`step1_max_rows=40`, prevents LLM output truncation on 65+ row tables), batched step 2, and async concurrency. Supports an optional **vision-based schema inference** mode for PDFs with garbled/concatenated headers: pass `pdf_path=` to `interpret_table()` to render pages as images and use a vision LLM to infer column structure before parsing. Includes **deterministic section boundary validation**: after the LLM parses table structure (step 1), Python code counts pipe-table data rows per section directly from the compressed text and corrects any miscounted boundaries before batching. The **`UnpivotStrategy`** enum (`SCHEMA_AGNOSTIC`, `DETERMINISTIC`, `NONE`) controls how pivoted tables are handled: `SCHEMA_AGNOSTIC` pre-unpivots for the LLM via `unpivot.py`, `DETERMINISTIC` lets the deterministic mapper handle pivots and sends the original to the LLM, `NONE` skips all pivot handling. The `unpivot` parameter on all entry points accepts both the enum and `bool` for backward compatibility (`True` → `SCHEMA_AGNOSTIC`, `False` → `NONE`). Key public functions: `interpret_table()`, `interpret_table_single_shot()`, `infer_table_schema_from_image()`, `to_records()`, `to_records_by_page()`.
+- **`unpivot.py`** — Schema-agnostic deterministic pivot detection and unpivoting for pipe-tables. Detects repeating compound header groups (e.g. `"crop A / 2025"`, `"crop B / 2025"`) by splitting on ` / `, grouping by prefix, and fuzzy-matching suffix lists across groups using `rapidfuzz.fuzz.ratio()`. When ≥2 groups share ≥2 matching suffixes, transforms the wide pivoted table into long format with a `_pivot` column containing the group prefix. Non-matching groups (e.g. `"Th.ha. / Region"`) become shared columns. Runs as a pre-processing step before the LLM path only (the deterministic mapper handles pivoted tables natively via alias-based group detection, so unpivoting is applied after the deterministic attempt fails). Public functions: `unpivot_pipe_table(text, *, similarity_threshold, min_groups, pivot_column_name)`, `detect_pivot(text, *, similarity_threshold, min_groups)`.
+- **`normalize.py`** — Centralized pipe-table text normalization. Single function `normalize_pipe_table(text)` that applies lossless, idempotent normalizations to pipe-table markdown: NBSP → space, smart quotes → ASCII, en/em-dash → hyphen, zero-width character removal, whitespace collapse, trailing whitespace strip. Applied automatically at entry points of `classify_tables()`, `interpret_table()`, `interpret_table_single_shot()`, `interpret_table_async()`, and `interpret_tables_async()`.
+
+**Layer 4: Semantic**
+
 - **`contracts.py`** — Contract helpers for loading JSON data contracts and transforming DataFrames. **Prepare helpers**: `load_contract(path)` parses a JSON contract into a typed `ContractContext` dataclass (with `OutputSpec` per output containing the `CanonicalSchema`, enrichment rules, column specs, and `SemanticColumnSpec` for columns with `concept_uris`); `resolve_year_templates(aliases, pivot_years)` resolves `{YYYY}`, `{YYYY-1}`, `{YYYY+1}` patterns in schema aliases using document-extracted years. **Semantic parsing**: `load_contract()` extracts `concept_uris`, `resolve`, and `semantic` fields from contract columns into `SemanticColumnSpec` dataclasses (stored in `OutputSpec.semantic_columns`), and sets `ContractContext.has_semantic_annotations` when any column has concept URIs. **Transform helpers**: `enrich_dataframe(df, enrichment, *, title, report_date)` adds contract-specified enrichment columns (`source: "title"/"report_date"/"constant"`); `format_dataframe(df, col_specs)` applies column-level case transformations (`lowercase`/`uppercase`/`titlecase`) and row filters (`latest`/`earliest`). Each helper is small, stateless, and composable — orchestration stays in the notebook.
 - **`semantics.py`** — Semantic-aware pipeline support. Provides three capabilities without importing from `contract_semantics`: (1) `SemanticContext` dataclass — pre-resolved semantic data (aliases and valid value sets) built externally by `contract_semantics.context.build_semantic_context()`, serializable to/from JSON via `to_json()`/`from_json()`; (2) `preflight_check(data, output_spec, semantic_context)` — compares document headers against contract aliases (manual + resolved), reports coverage; (3) `validate_output(df, output_spec, semantic_context)` — checks extracted DataFrame values against known valid concept labels for columns with `validate=True`. All functions are informational — they never block extraction. Uses `_normalize_for_alias_match()` from `interpret.py` for consistent matching. Public types: `SemanticContext`, `PreFlightReport`, `PreFlightFinding`, `ValidationReport`, `ValidationFinding`.
+
+**Layer 5: Serialization**
+
+- **`serialize.py`** — Serialization module for exporting `interpret_table()` results to various formats. Validates records against the CanonicalSchema using Pydantic before serialization, with automatic coercion of OCR artifacts (e.g., `"1,234"` → `1234`, `"(500)"` → `-500`). Applies output formatting from `ColumnDef.format` field — supports date/time patterns (`YYYY-MM-DD`, `HH:mm`), number patterns (`#,###.##`, `+#`, `#%`), and string case transformations (`uppercase`, `camelCase`, `snake_case`, etc.). Public functions: `to_csv(result, schema, *, path=None, include_page=False)`, `to_tsv(...)`, `to_parquet(result, schema, path, *, include_page=False)`, `to_pandas(...)`, `to_polars(...)`. Optional dependencies: `pip install docpact[dataframes]` for pandas/polars, `pip install docpact[parquet]` for Parquet support.
+
+**Layer 6: Orchestration**
+
 - **`pipeline.py`** — Async pipeline orchestration helpers. Four composable layers: (1) `compress_and_classify_async(doc_path, categories, output_specs)` — compresses a document and classifies its tables into output categories, with DOCX/PDF branching and `asyncio.to_thread()` for CPU-bound PDF compression; (2) `interpret_output_async(data, output_spec, *, model, unpivot, report_date, pivot_years, semantic_context)` — interprets one output category end-to-end (deep-copies schema, resolves year templates, merges resolved aliases from `SemanticContext`, calls `_interpret_pages_batched_async`, enriches, formats, reorders columns); (3) `process_document_async(doc_path, cc, *, semantic_context)` — convenience layer composing both helpers with report-date resolution, plus pre-flight checks (after compress) and post-extraction validation (after enrichment) when `semantic_context` is provided, returning a `DocumentResult` dataclass; (4) `run_pipeline_async(contract_path, doc_paths, output_dir, *, semantic_context)` — top-level orchestrator that loads the contract, processes all documents concurrently, merges DataFrames across documents, and writes Parquet output. Also exports `save(results, output_dir)` for standalone merge+write. All helpers are independently useful and stateless. The `DocumentResult` dataclass holds `doc_path`, `report_date`, `compressed_by_category`, `dataframes`, `preflight_reports`, and `validation_reports`.
 
 ### BAML Source Layer (`baml_src/`)
@@ -89,6 +212,7 @@ Test PDF files including shipping statements and edge-case documents (multi-colu
 
 - **`capabilities.ipynb`** — Sequential walkthrough of every transformation step (spatial text → compression → classification → schema → LLM interpretation → serialization). Format-agnostic, educational.
 - **`pipeline.ipynb`** — End-to-end contract-driven pipelines with async concurrency. Three use cases: Russian agricultural DOCX reports, Australian shipping stems (6 PDF providers), and ACEA car registrations (pivoted table normalization).
+- **`xlsx_extraction.ipynb`** — XLSX extractor companion notebook. Demonstrates all extraction capabilities: basic extraction (P1), merged/compound headers (P2), multi-table detection (XH1), title detection (XH2), hidden content filtering (XH3), number format hints (XH4), visual style heuristics, markdown rendering, and a full fixture survey across all 16 synthetic documents.
 - **`walkthrough_legacy.ipynb`** / **`walkthrough_docx_legacy.ipynb`** — Original format-specific notebooks (preserved for reference).
 
 ### Data Contracts (`contracts/`)

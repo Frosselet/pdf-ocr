@@ -25,6 +25,7 @@ from docpact.heuristics import (
     build_column_names_from_headers,
     detect_cell_type,
     estimate_header_rows,
+    estimate_header_rows_from_types,
     is_header_type_pattern,
     normalize_grid,
     split_headers_from_data,
@@ -75,6 +76,7 @@ class ExcelTable:
     visual: ExcelVisualInfo | None = None
     sheet_name: str = ""
     table_index: int = 0
+    number_format_hints: list[list[str | None]] = field(default_factory=list)  # XH4
 
 
 # ---------------------------------------------------------------------------
@@ -290,10 +292,15 @@ def _expand_merged_cells(
 # ---------------------------------------------------------------------------
 
 
-def _find_data_bounds(ws: "Worksheet") -> tuple[int, int, int, int] | None:
+def _find_data_bounds(
+    ws: "Worksheet",
+    *,
+    filter_hidden: bool = True,
+) -> tuple[int, int, int, int] | None:
     """Find the bounding box of actual data in the worksheet.
 
     Returns (min_row, max_row, min_col, max_col) or None if empty.
+    When filter_hidden=True, hidden rows/columns are excluded from bounds.
     """
     min_row = ws.min_row
     max_row = ws.max_row
@@ -309,6 +316,185 @@ def _find_data_bounds(ws: "Worksheet") -> tuple[int, int, int, int] | None:
     return (min_row, max_row, min_col, max_col)
 
 
+def _get_hidden_cols(ws: "Worksheet", min_col: int, max_col: int) -> set[int]:
+    """XH3: Get set of hidden column numbers.
+
+    Checks ws.column_dimensions[letter].hidden for each column.
+    """
+    from openpyxl.utils import get_column_letter
+
+    hidden: set[int] = set()
+    for col in range(min_col, max_col + 1):
+        letter = get_column_letter(col)
+        dim = ws.column_dimensions.get(letter)
+        if dim and dim.hidden:
+            hidden.add(col)
+    return hidden
+
+
+def _get_hidden_rows(ws: "Worksheet", min_row: int, max_row: int) -> set[int]:
+    """XH3: Get set of hidden row numbers.
+
+    Checks ws.row_dimensions[row].hidden for each row.
+    """
+    hidden: set[int] = set()
+    for row in range(min_row, max_row + 1):
+        dim = ws.row_dimensions.get(row)
+        if dim and dim.hidden:
+            hidden.add(row)
+    return hidden
+
+
+def _detect_number_format_hint(cell: "Cell") -> str | None:
+    """XH4: Infer a type hint from the cell's number format.
+
+    Returns 'date', 'currency', 'percentage', or None.
+    """
+    fmt = cell.number_format
+    if not fmt or fmt == "General":
+        return None
+
+    fmt_lower = fmt.lower()
+
+    # Date patterns
+    date_indicators = ["yyyy", "yy", "mm", "dd", "mmm", "mmmm"]
+    if any(ind in fmt_lower for ind in date_indicators):
+        # Exclude time-only formats
+        if any(d in fmt_lower for d in ["y", "d"]):
+            return "date"
+
+    # Currency patterns
+    if any(sym in fmt for sym in ["$", "€", "£", "¥"]):
+        return "currency"
+
+    # Percentage
+    if "%" in fmt:
+        return "percentage"
+
+    return None
+
+
+def _estimate_header_rows_from_merges(
+    ws: "Worksheet",
+    min_row: int,
+    max_row: int,
+    min_col: int,
+    max_col: int,
+    grid: list[list[str]],
+    *,
+    max_scan: int = 10,
+) -> int:
+    """Estimate header row count using horizontal merge ranges + type continuation.
+
+    Only counts merges that span multiple columns (horizontal spans) as header
+    indicators. Vertical-only merges (spanning rows but not columns) indicate
+    row label grouping, not headers.
+
+    1. Find the last row (within first max_scan rows) with a horizontal merge.
+    2. Continue past the last merge row while rows are all-string (TH2).
+    3. Return the total count.
+
+    This mirrors DOCX's DH2 but uses openpyxl's merged_cells.ranges.
+    """
+    scan_limit = min(min_row + max_scan - 1, max_row)
+
+    # Find last row with a horizontal merge in the first max_scan rows
+    last_merge_row = -1
+    for merged_range in ws.merged_cells.ranges:
+        mr_min_r = merged_range.min_row
+        mr_max_r = merged_range.max_row
+        mr_min_c = merged_range.min_col
+        mr_max_c = merged_range.max_col
+
+        # Only count horizontal merges (spanning multiple columns)
+        is_horizontal = mr_max_c > mr_min_c
+
+        # Check if merge overlaps with our region's header zone
+        if (is_horizontal and
+                mr_min_r >= min_row and mr_min_r <= scan_limit and
+                mr_min_c <= max_col and mr_max_c >= min_col):
+            row_offset = mr_min_r - min_row
+            if row_offset > last_merge_row:
+                last_merge_row = row_offset
+
+    if last_merge_row < 0:
+        return 0  # No horizontal merges found
+
+    # From last_merge_row + 1, continue while rows are all-string
+    header_count = last_merge_row + 1
+    for i in range(header_count, len(grid)):
+        if is_header_type_pattern(grid[i]):
+            header_count = i + 1
+        else:
+            break
+
+    return header_count
+
+
+def _build_column_names_with_forward_fill(
+    header_rows: list[list[str]],
+) -> list[str]:
+    """Build column names from multi-row headers with forward-fill.
+
+    For each header row, empty cells inherit the preceding non-empty cell's
+    value (forward-fill). This handles merged header spans where a label like
+    "Revenue" spans cols 2-3 but only col 2 has the value.
+
+    Then stacks rows vertically with " / " separator, deduplicating consecutive
+    identical fragments.
+    """
+    if not header_rows:
+        return []
+
+    num_cols = max(len(row) for row in header_rows)
+
+    # Forward-fill each header row independently
+    filled_rows: list[list[str]] = []
+    for row in header_rows:
+        filled: list[str] = []
+        last_val = ""
+        for ci in range(num_cols):
+            val = row[ci].strip() if ci < len(row) else ""
+            if val:
+                last_val = val
+                filled.append(val)
+            else:
+                filled.append(last_val)
+        filled_rows.append(filled)
+
+    # Stack rows with " / " separator, dedup consecutive identical fragments
+    column_names: list[str] = []
+    for ci in range(num_cols):
+        parts: list[str] = []
+        for row in filled_rows:
+            val = row[ci] if ci < len(row) else ""
+            if val and (not parts or val != parts[-1]):
+                parts.append(val)
+        column_names.append(" / ".join(parts))
+
+    return column_names
+
+
+def _detect_title_row(
+    grid: list[list[str]],
+    header_count: int,
+) -> tuple[str | None, list[list[str]], int]:
+    """XH2: Detect if the first row is a title row.
+
+    A title row has exactly one non-empty cell and header_count > 1.
+    Returns (title, adjusted_grid, adjusted_header_count).
+    """
+    if not grid or header_count <= 1:
+        return None, grid, header_count
+
+    non_empty = [c for c in grid[0] if c.strip()]
+    if len(non_empty) == 1:
+        title = non_empty[0]
+        return title, grid[1:], header_count - 1
+
+    return None, grid, header_count
+
+
 def _extract_table_from_range(
     ws: "Worksheet",
     min_row: int,
@@ -316,29 +502,53 @@ def _extract_table_from_range(
     min_col: int,
     max_col: int,
     extract_styles: bool = True,
+    *,
+    hidden_rows: set[int] | None = None,
+    hidden_cols: set[int] | None = None,
 ) -> ExcelTable:
-    """Extract a table from a specific range in the worksheet."""
+    """Extract a table from a specific range in the worksheet.
+
+    XH3: When hidden_rows/hidden_cols are provided, those rows/columns
+    are excluded from the output grid entirely.
+    """
+    if hidden_rows is None:
+        hidden_rows = set()
+    if hidden_cols is None:
+        hidden_cols = set()
+
     # Get cell values accounting for merges
     cell_values = _expand_merged_cells(ws, min_row, max_row, min_col, max_col)
+
+    # Build visible column list (XH3)
+    visible_cols = [c for c in range(min_col, max_col + 1) if c not in hidden_cols]
 
     # Build grid
     grid: list[list[str]] = []
     styles: list[list[ExcelCellStyle]] = []
+    number_format_hints: list[list[str | None]] = []
 
     for row in range(min_row, max_row + 1):
+        if row in hidden_rows:
+            continue  # XH3: skip hidden rows
+
         row_data: list[str] = []
         row_styles: list[ExcelCellStyle] = []
+        row_hints: list[str | None] = []
 
-        for col in range(min_col, max_col + 1):
+        for col in visible_cols:
             row_data.append(cell_values.get((row, col), ""))
 
+            cell = ws.cell(row=row, column=col)
             if extract_styles:
-                cell = ws.cell(row=row, column=col)
                 row_styles.append(_extract_cell_style(cell))
+
+            # XH4: number format hints
+            row_hints.append(_detect_number_format_hint(cell))
 
         grid.append(row_data)
         if extract_styles:
             styles.append(row_styles)
+        number_format_hints.append(row_hints)
 
     # Analyze visual structure
     visual = _analyze_visual_structure(styles) if styles else None
@@ -348,25 +558,145 @@ def _extract_table_from_range(
         styles=styles if extract_styles else None,
         visual=visual,
         sheet_name=ws.title or "",
+        number_format_hints=number_format_hints,
     )
+
+
+def _is_row_blank(
+    ws: "Worksheet",
+    row: int,
+    min_col: int,
+    max_col: int,
+) -> bool:
+    """Check if every cell in a row is empty or whitespace-only."""
+    for col in range(min_col, max_col + 1):
+        val = ws.cell(row=row, column=col).value
+        if val is not None and str(val).strip():
+            return False
+    return True
+
+
+def _is_col_blank(
+    ws: "Worksheet",
+    col: int,
+    min_row: int,
+    max_row: int,
+) -> bool:
+    """Check if every cell in a column is empty or whitespace-only."""
+    for row in range(min_row, max_row + 1):
+        val = ws.cell(row=row, column=col).value
+        if val is not None and str(val).strip():
+            return False
+    return True
 
 
 def _detect_table_regions(
     ws: "Worksheet",
     bounds: tuple[int, int, int, int],
+    *,
+    min_blank_rows: int = 2,
+    min_blank_cols: int = 2,
+    min_table_size: tuple[int, int] = (2, 2),
 ) -> list[tuple[int, int, int, int]]:
-    """Detect separate table regions within a worksheet.
+    """XH1: Detect separate table regions within a worksheet.
 
-    Looks for gaps (multiple empty rows/columns) that separate tables.
-    Most worksheets have a single table, but some have multiple.
+    Uses blank-row and blank-column gaps to separate tables:
+    - Runs of N >= min_blank_rows consecutive blank rows → vertical separator
+    - Within each vertical segment, runs of N >= min_blank_cols blank columns
+      → horizontal separator
+
+    Rationale: One blank row is breathing room within a table (subtotals,
+    section breaks). Two+ blank rows signal "these are separate things."
+    Same principle applies to columns.
 
     Returns list of (min_row, max_row, min_col, max_col) tuples.
+    Each region has at least min_table_size cells.
     """
     min_row, max_row, min_col, max_col = bounds
 
-    # For now, treat entire range as one table
-    # TODO: Implement gap detection for multiple tables
-    return [(min_row, max_row, min_col, max_col)]
+    # Step 1: Find vertical segments (split by blank-row runs)
+    row_segments = _split_by_blank_runs(
+        [_is_row_blank(ws, r, min_col, max_col) for r in range(min_row, max_row + 1)],
+        min_blank_rows,
+    )
+    # Convert relative offsets to absolute row numbers
+    v_segments = [
+        (min_row + start, min_row + end)
+        for start, end in row_segments
+    ]
+
+    # Step 2: Within each vertical segment, find horizontal segments
+    regions: list[tuple[int, int, int, int]] = []
+    for seg_min_row, seg_max_row in v_segments:
+        col_segments = _split_by_blank_runs(
+            [_is_col_blank(ws, c, seg_min_row, seg_max_row) for c in range(min_col, max_col + 1)],
+            min_blank_cols,
+        )
+        for col_start, col_end in col_segments:
+            abs_min_col = min_col + col_start
+            abs_max_col = min_col + col_end
+
+            # Filter: region must be at least min_table_size
+            num_rows = seg_max_row - seg_min_row + 1
+            num_cols = abs_max_col - abs_min_col + 1
+            if num_rows >= min_table_size[0] and num_cols >= min_table_size[1]:
+                regions.append((seg_min_row, seg_max_row, abs_min_col, abs_max_col))
+
+    if not regions:
+        # Fallback: entire range as one table
+        return [(min_row, max_row, min_col, max_col)]
+
+    return regions
+
+
+def _split_by_blank_runs(
+    is_blank: list[bool],
+    min_gap: int,
+) -> list[tuple[int, int]]:
+    """Split a sequence of blank/non-blank flags into non-blank segments.
+
+    A run of >= min_gap consecutive True values is a separator.
+    Returns list of (start_index, end_index) inclusive tuples for
+    the non-blank segments.
+    """
+    n = len(is_blank)
+    if n == 0:
+        return []
+
+    # Find runs of blanks
+    segments: list[tuple[int, int]] = []
+    seg_start: int | None = None
+
+    for i in range(n):
+        if not is_blank[i]:
+            if seg_start is None:
+                seg_start = i
+        else:
+            # Check if this is the start of a gap
+            if seg_start is not None:
+                # Count consecutive blanks from here
+                gap_len = 0
+                j = i
+                while j < n and is_blank[j]:
+                    gap_len += 1
+                    j += 1
+                if gap_len >= min_gap:
+                    # End current segment
+                    segments.append((seg_start, i - 1))
+                    seg_start = None
+                # If gap_len < min_gap, keep going (blank is within the table)
+
+    # Close final segment
+    if seg_start is not None:
+        # Find last non-blank
+        last_non_blank = seg_start
+        for i in range(n - 1, seg_start - 1, -1):
+            if not is_blank[i]:
+                last_non_blank = i
+                break
+        segments.append((seg_start, last_non_blank))
+
+    return segments
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +709,7 @@ def extract_tables_from_xlsx(
     *,
     sheets: list[str | int] | None = None,
     extract_styles: bool = True,
+    filter_hidden: bool = True,
 ) -> list[StructuredTable]:
     """Extract structured tables from an Excel file.
 
@@ -387,6 +718,8 @@ def extract_tables_from_xlsx(
         sheets: Optional list of sheet names or indices to process.
             If None, processes all sheets.
         extract_styles: If True, extract visual style information.
+        filter_hidden: If True (default), exclude hidden rows and columns.
+            XH3 heuristic: content that the author chose not to show.
 
     Returns:
         List of StructuredTable objects, one per table found.
@@ -433,14 +766,23 @@ def extract_tables_from_xlsx(
         if bounds is None:
             continue  # Empty sheet
 
-        # Detect table regions (usually just one)
+        # XH3: Identify hidden rows/columns
+        hidden_rows: set[int] = set()
+        hidden_cols: set[int] = set()
+        if filter_hidden:
+            hidden_rows = _get_hidden_rows(ws, bounds[0], bounds[1])
+            hidden_cols = _get_hidden_cols(ws, bounds[2], bounds[3])
+
+        # XH1: Detect table regions (handles multi-table sheets)
         regions = _detect_table_regions(ws, bounds)
 
         for table_idx, (min_row, max_row, min_col, max_col) in enumerate(regions):
-            # Extract raw table
+            # Extract raw table (with XH3 hidden filtering)
             excel_table = _extract_table_from_range(
                 ws, min_row, max_row, min_col, max_col,
                 extract_styles=extract_styles,
+                hidden_rows=hidden_rows,
+                hidden_cols=hidden_cols,
             )
             excel_table.table_index = table_idx
 
@@ -450,45 +792,68 @@ def extract_tables_from_xlsx(
             # Normalize grid
             grid = normalize_grid(excel_table.grid)
 
-            # Estimate header rows
-            # Use visual info if available, otherwise use heuristics
+            # Estimate header rows — layered approach:
+            # 1. Visual fill (if available and clear)
+            # 2. Merge-based detection (last merge row + type continuation)
+            # 3. Type-pattern analysis (TH2) — consecutive all-string rows
+            # 4. Span-count analysis (H7) as last resort
+            # Take the maximum across all methods.
             header_count = 0
             if excel_table.visual and excel_table.visual.header_fill_rows:
-                # Visual-based header detection
                 header_count = len(excel_table.visual.header_fill_rows)
             else:
-                # Heuristic-based header detection
-                header_count = estimate_header_rows(grid)
+                # Merge-based: last merge row + continue while all-string
+                merge_count = _estimate_header_rows_from_merges(
+                    ws, min_row, max_row, min_col, max_col, grid,
+                )
+                # Type-pattern: consecutive all-string rows from top
+                type_count = estimate_header_rows_from_types(grid)
+                # Span-count: bottom-up pattern detection
+                span_count = estimate_header_rows(grid)
+                # Take the maximum — each method catches cases others miss
+                header_count = max(merge_count, type_count, span_count)
+
+            # XH2: Title row detection
+            title, grid, header_count = _detect_title_row(grid, header_count)
 
             # Split headers from data
             header_rows, data_rows = split_headers_from_data(grid, header_count)
 
-            # Build column names
-            column_names = build_column_names_from_headers(header_rows)
+            # Build column names with forward-fill for merged header spans
+            column_names = _build_column_names_with_forward_fill(header_rows)
 
             # Ensure column names list has correct length
             num_cols = len(grid[0]) if grid else 0
             while len(column_names) < num_cols:
                 column_names.append("")
 
+            # XH4: Collect number format hints for the table
+            format_hints: dict[int, str] = {}
+            if excel_table.number_format_hints:
+                # Check first data row for format hints per column
+                hint_start = header_count + (1 if title else 0)
+                if hint_start < len(excel_table.number_format_hints):
+                    for ci, hint in enumerate(excel_table.number_format_hints[hint_start]):
+                        if hint:
+                            format_hints[ci] = hint
+
             # Create metadata
-            metadata = TableMetadata(
-                page_number=sheet_idx,  # Use sheet index as "page"
-                table_index=table_idx,
-                section_label=None,
-                sheet_name=sheet_name,
-            )
+            meta_dict: dict[str, str | int | None] = {
+                "page_number": sheet_idx,
+                "table_index": table_idx,
+                "sheet_name": sheet_name,
+            }
+            if title:
+                meta_dict["title"] = title
+            if format_hints:
+                meta_dict["format_hints"] = format_hints  # type: ignore[assignment]
 
             # Create StructuredTable
             result.append(StructuredTable(
                 column_names=column_names,
                 data=data_rows,
                 source_format="xlsx",
-                metadata={
-                    "page_number": metadata.page_number,
-                    "table_index": metadata.table_index,
-                    "sheet_name": metadata.sheet_name,
-                },
+                metadata=meta_dict,
             ))
 
     wb.close()
