@@ -17,7 +17,7 @@ from pathlib import Path
 
 from contract_semantics.agrovoc import AgrovocAdapter
 from contract_semantics.geonames import GeoNamesAdapter
-from contract_semantics.models import ConceptRef, GeoEnrichment, ResolveConfig
+from contract_semantics.models import ConceptRef, GeoEnrichment, ResolvedAlias, ResolveConfig
 from contract_semantics.resolve import OntologyAdapter, resolve_column
 
 
@@ -84,6 +84,11 @@ def materialize_contract(
                 col["name"], concept_refs, manual_aliases, resolve_config, adapter
             )
 
+            # Build resolved alias lookup for provenance
+            resolved_lookup: dict[str, ResolvedAlias] = {}
+            for ra in result.resolved_aliases:
+                resolved_lookup.setdefault(ra.alias.lower(), ra)
+
             # Merge aliases
             resolved_alias_strings = [ra.alias for ra in result.resolved_aliases]
             if merge_strategy == "union":
@@ -107,6 +112,30 @@ def materialize_contract(
                 merged = list(manual_aliases)
 
             col["aliases"] = merged
+
+            # Build per-alias provenance metadata
+            manual_lower_set = {a.lower() for a in manual_aliases}
+            provenance: dict[str, dict] = {}
+            for alias in merged:
+                ra = resolved_lookup.get(alias.lower())
+                if ra is not None and alias.lower() in manual_lower_set:
+                    # Both manual and resolved
+                    provenance[alias] = {
+                        "source": "both",
+                        "concept_uri": ra.concept_uri,
+                        "language": ra.language,
+                        "label_type": ra.label_type,
+                    }
+                elif ra is not None:
+                    provenance[alias] = {
+                        "source": "resolved",
+                        "concept_uri": ra.concept_uri,
+                        "language": ra.language,
+                        "label_type": ra.label_type,
+                    }
+                else:
+                    provenance[alias] = {"source": "manual"}
+            col["_alias_provenance"] = provenance
 
             # Collect geo enrichment for sidecar
             if source == "geonames" and isinstance(adapter, GeoNamesAdapter):

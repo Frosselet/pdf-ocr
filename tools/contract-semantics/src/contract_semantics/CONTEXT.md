@@ -14,11 +14,11 @@ This module is the **only place** that imports from both packages:
 The `SemanticContext` is then passed into `process_document_async()` or
 `run_pipeline_async()` — docpact never imports from `contract_semantics`.
 
-## Public Function
+## Public Functions
 
-### `build_semantic_context(contract_path, *, agrovoc=None, geonames=None, merge_strategy="union", cache_path=None) → SemanticContext`
+### `build_context_data(contract_path, *, agrovoc=None, geonames=None, merge_strategy="union") → dict`
 
-Resolves all concept URIs in a contract and packages the results.
+Core resolution logic, independent of `docpact`. Returns a plain dict suitable for constructing a `SemanticContext` via `from_dict()`.
 
 **Parameters:**
 
@@ -28,6 +28,17 @@ Resolves all concept URIs in a contract and packages the results.
 | `agrovoc` | `OntologyAdapter \| None` | AGROVOC adapter (offline or online) |
 | `geonames` | `OntologyAdapter \| None` | GeoNames adapter (offline or online) |
 | `merge_strategy` | `str` | `"union"` (default), `"resolved_only"`, `"manual_priority"` |
+
+**Returns:** Dict with `resolved_aliases`, `valid_values`, `resolved_at`, and `adapter_versions` keys.
+
+### `build_semantic_context(contract_path, *, agrovoc=None, geonames=None, merge_strategy="union", cache_path=None) → SemanticContext`
+
+Convenience wrapper: calls `build_context_data()` and wraps the result in a `SemanticContext`. Requires `docpact` to be installed.
+
+**Additional parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
 | `cache_path` | `str \| Path \| None` | If given, write context to this JSON path |
 
 **Returns:** `SemanticContext` with:

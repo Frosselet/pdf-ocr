@@ -173,3 +173,61 @@ class TestMaterializeContract:
         # Manual aliases that aren't in ontology should be gone
         # "wheat" and "barley" are both manual AND resolved, so they stay
         assert "wheat" in crop_col["aliases"]
+
+    def test_alias_provenance_present(
+        self,
+        annotated_contract: Path,
+        agrovoc_adapter: AgrovocAdapter,
+        geonames_adapter: GeoNamesAdapter,
+    ) -> None:
+        """Materialized columns with concept_uris include _alias_provenance."""
+        result = materialize_contract(
+            annotated_contract,
+            agrovoc=agrovoc_adapter,
+            geonames=geonames_adapter,
+        )
+        crop_col = result["outputs"]["harvest"]["schema"]["columns"][0]
+        prov = crop_col["_alias_provenance"]
+        # "wheat" is both manual and resolved
+        assert prov["wheat"]["source"] == "both"
+        assert "concept_uri" in prov["wheat"]
+        # "common wheat" is resolved-only (altLabel from ontology)
+        assert prov["common wheat"]["source"] == "resolved"
+        assert prov["common wheat"]["concept_uri"] == "http://aims.fao.org/aos/agrovoc/c_8373"
+        assert prov["common wheat"]["language"] == "en"
+        assert prov["common wheat"]["label_type"] == "altLabel"
+
+    def test_alias_provenance_not_on_unannotated(
+        self,
+        annotated_contract: Path,
+        agrovoc_adapter: AgrovocAdapter,
+        geonames_adapter: GeoNamesAdapter,
+    ) -> None:
+        """Unannotated columns (no concept_uris) do not get _alias_provenance."""
+        result = materialize_contract(
+            annotated_contract,
+            agrovoc=agrovoc_adapter,
+            geonames=geonames_adapter,
+        )
+        value_col = result["outputs"]["harvest"]["schema"]["columns"][2]
+        assert "_alias_provenance" not in value_col
+
+    def test_alias_provenance_serializable(
+        self,
+        annotated_contract: Path,
+        agrovoc_adapter: AgrovocAdapter,
+        geonames_adapter: GeoNamesAdapter,
+        tmp_path: Path,
+    ) -> None:
+        """_alias_provenance roundtrips through JSON serialization."""
+        out_path = tmp_path / "materialized.json"
+        materialize_contract(
+            annotated_contract,
+            agrovoc=agrovoc_adapter,
+            geonames=geonames_adapter,
+            output_path=out_path,
+        )
+        loaded = json.loads(out_path.read_text())
+        crop_col = loaded["outputs"]["harvest"]["schema"]["columns"][0]
+        assert "_alias_provenance" in crop_col
+        assert crop_col["_alias_provenance"]["wheat"]["source"] == "both"

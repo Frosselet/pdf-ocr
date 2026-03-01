@@ -5,6 +5,15 @@ One entry per significant capability or phase transition.
 
 ## Phase 1: Semantic Contracts (in progress)
 
+### 2026-03-01 — Phase 1 closure: tests + acceptance criteria
+- `build_context_data()` refactored from `build_semantic_context()` for docpact-independent testing
+- `_alias_provenance` field in materialized contracts traces every alias to its source concept URI
+- 4 acceptance criteria tests (AC1–AC4): bilingual aliases, SHACL validation, diff coverage, alias provenance
+- 11 unit tests for `build_context_data()` (resolved aliases, valid values, merge strategies, cache roundtrip)
+- 7 cross-package integration tests (alias enrichment, pre-flight checks, post-extraction validation, JSON roundtrip)
+- 3 new provenance tests in `test_materialize.py`
+- 25 new tests total (614 docpact + 118 contract-semantics), all passing
+
 ### 2026-02-26 — Extractor pattern alignment + documentation
 - `pdf_extractor.py` facade: `extract_tables_from_pdf()`, `pdf_to_markdown()`
 - 11 per-module `.md` documentation files (every `.py` now has a `.md`)

@@ -87,6 +87,47 @@ Columns without `concept_uris` pass through unchanged.
 
 ---
 
+## Alias Provenance
+
+Each annotated column in the materialized output includes an `_alias_provenance` field that traces every alias to its origin:
+
+```json
+{
+  "name": "Crop",
+  "aliases": ["wheat", "пшеница", "common wheat"],
+  "_alias_provenance": {
+    "wheat": {
+      "source": "both",
+      "concept_uri": "http://aims.fao.org/aos/agrovoc/c_8373",
+      "language": "en",
+      "label_type": "prefLabel"
+    },
+    "пшеница": {
+      "source": "resolved",
+      "concept_uri": "http://aims.fao.org/aos/agrovoc/c_8373",
+      "language": "ru",
+      "label_type": "prefLabel"
+    },
+    "common wheat": {
+      "source": "resolved",
+      "concept_uri": "http://aims.fao.org/aos/agrovoc/c_8373",
+      "language": "en",
+      "label_type": "altLabel"
+    }
+  }
+}
+```
+
+| Source | Meaning |
+|---|---|
+| `manual` | Alias was hand-curated in the contract |
+| `resolved` | Alias was discovered via ontology resolution |
+| `both` | Alias appears in both manual and resolved sets |
+
+The `_` prefix signals this is metadata, not consumed by docpact's `load_contract()` (which ignores unknown fields). Unannotated columns (no `concept_uris`) do not get `_alias_provenance`.
+
+---
+
 ## Geo Sidecar Output
 
 When a GeoNames-grounded column has `enrich_fields` configured, the materializer produces a sidecar JSON file mapping region names to geographic metadata:
@@ -115,4 +156,4 @@ Available enrich fields: `lat`, `lng`, `admin1Code`, `countryCode`, `population`
 
 ## Test Coverage
 
-6 tests in `tests/test_materialize.py` covering alias enrichment, annotation field removal, unannotated column passthrough, file output, geo sidecar output, and `resolved_only` merge strategy.
+9 tests in `tests/test_materialize.py` covering alias enrichment, annotation field removal, unannotated column passthrough, file output, geo sidecar output, `resolved_only` merge strategy, alias provenance presence, provenance exclusion on unannotated columns, and provenance JSON serialization.

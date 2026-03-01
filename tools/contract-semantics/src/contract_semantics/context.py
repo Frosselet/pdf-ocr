@@ -34,19 +34,18 @@ from contract_semantics.models import ConceptRef, ResolveConfig
 from contract_semantics.resolve import OntologyAdapter, resolve_column
 
 
-def build_semantic_context(
+def build_context_data(
     contract_path: str | Path,
     *,
     agrovoc: OntologyAdapter | None = None,
     geonames: OntologyAdapter | None = None,
     merge_strategy: str = "union",
-    cache_path: str | Path | None = None,
-) -> "SemanticContext":
-    """Resolve all concept URIs in a contract and build a SemanticContext.
+) -> dict:
+    """Resolve all concept URIs in a contract and return raw context data.
 
-    For each column with ``concept_uris``, resolves labels through the
-    appropriate adapter and packages them as resolved aliases and valid
-    value sets.
+    This is the core resolution logic, independent of ``docpact``.
+    Returns a plain dict suitable for constructing a
+    :class:`docpact.semantics.SemanticContext` via ``from_dict()``.
 
     Parameters:
         contract_path: Path to the annotated contract JSON.
@@ -54,14 +53,11 @@ def build_semantic_context(
         geonames: GeoNames adapter instance (offline or online).
         merge_strategy: How to merge resolved and manual aliases —
             ``"union"`` (default), ``"resolved_only"``, ``"manual_priority"``.
-        cache_path: If given, write the built context to this JSON path.
 
     Returns:
-        A :class:`docpact.semantics.SemanticContext` ready to pass into
-        ``process_document_async()`` or ``run_pipeline_async()``.
+        Dict with ``resolved_aliases``, ``valid_values``, ``resolved_at``,
+        and ``adapter_versions`` keys.
     """
-    from docpact.semantics import SemanticContext
-
     with open(contract_path) as f:
         contract = json.load(f)
 
@@ -72,11 +68,11 @@ def build_semantic_context(
         adapters["geonames"] = geonames
 
     resolved_aliases: dict[str, dict[str, list[str]]] = {}
-    valid_values: dict[str, dict[str, set[str]]] = {}
+    valid_values: dict[str, dict[str, list[str]]] = {}
 
     for out_name, out_spec in contract.get("outputs", {}).items():
         out_aliases: dict[str, list[str]] = {}
-        out_valid: dict[str, set[str]] = {}
+        out_valid: dict[str, list[str]] = {}
 
         for col in out_spec.get("schema", {}).get("columns", []):
             concept_uris_raw = col.get("concept_uris")
@@ -118,7 +114,7 @@ def build_semantic_context(
             for ra in result.resolved_aliases:
                 value_set.add(ra.alias)
             if value_set:
-                out_valid[col["name"]] = value_set
+                out_valid[col["name"]] = sorted(value_set)
 
         if out_aliases:
             resolved_aliases[out_name] = out_aliases
@@ -131,12 +127,50 @@ def build_semantic_context(
     if geonames is not None:
         adapter_versions["geonames"] = type(geonames).__name__
 
-    ctx = SemanticContext(
-        resolved_aliases=resolved_aliases,
-        valid_values=valid_values,
-        resolved_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        adapter_versions=adapter_versions,
+    return {
+        "resolved_aliases": resolved_aliases,
+        "valid_values": valid_values,
+        "resolved_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "adapter_versions": adapter_versions,
+    }
+
+
+def build_semantic_context(
+    contract_path: str | Path,
+    *,
+    agrovoc: OntologyAdapter | None = None,
+    geonames: OntologyAdapter | None = None,
+    merge_strategy: str = "union",
+    cache_path: str | Path | None = None,
+) -> "SemanticContext":
+    """Resolve all concept URIs in a contract and build a SemanticContext.
+
+    For each column with ``concept_uris``, resolves labels through the
+    appropriate adapter and packages them as resolved aliases and valid
+    value sets.
+
+    Parameters:
+        contract_path: Path to the annotated contract JSON.
+        agrovoc: AGROVOC adapter instance (offline or online).
+        geonames: GeoNames adapter instance (offline or online).
+        merge_strategy: How to merge resolved and manual aliases —
+            ``"union"`` (default), ``"resolved_only"``, ``"manual_priority"``.
+        cache_path: If given, write the built context to this JSON path.
+
+    Returns:
+        A :class:`docpact.semantics.SemanticContext` ready to pass into
+        ``process_document_async()`` or ``run_pipeline_async()``.
+    """
+    from docpact.semantics import SemanticContext
+
+    data = build_context_data(
+        contract_path,
+        agrovoc=agrovoc,
+        geonames=geonames,
+        merge_strategy=merge_strategy,
     )
+
+    ctx = SemanticContext.from_dict(data)
 
     if cache_path is not None:
         ctx.to_json(cache_path)
