@@ -126,6 +126,11 @@ def extract_tables_from_pptx(*args, **kwargs):
     from docpact.pptx_extractor import extract_tables_from_pptx as _extract
     return _extract(*args, **kwargs)
 
+def extract_tables_from_pdf(*args, **kwargs):
+    """Extract structured tables from PDF files."""
+    from docpact.pdf_extractor import extract_tables_from_pdf as _extract
+    return _extract(*args, **kwargs)
+
 def extract_tables_from_html(*args, **kwargs):
     """Extract tables from HTML. Requires: pip install docpact[html]"""
     from docpact.html_extractor import extract_tables_from_html as _extract
@@ -263,6 +268,7 @@ __all__ = [
     "detect_pivot",
     "unpivot_pipe_table",
     # Multi-format extractors (specific formats)
+    "extract_tables_from_pdf",
     "classify_tables",
     "classify_docx_tables",
     "compress_docx_tables",

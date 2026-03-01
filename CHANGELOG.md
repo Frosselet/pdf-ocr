@@ -5,6 +5,11 @@ One entry per significant capability or phase transition.
 
 ## Phase 1: Semantic Contracts (in progress)
 
+### 2026-02-26 — Extractor pattern alignment + documentation
+- `pdf_extractor.py` facade: `extract_tables_from_pdf()`, `pdf_to_markdown()`
+- 11 per-module `.md` documentation files (every `.py` now has a `.md`)
+- Lazy import + `__all__` entry for `extract_tables_from_pdf`
+
 ### 2026-02-26 — Semantic-aware pipeline
 - `SemanticContext` dataclass for pre-resolved ontology data
 - Pre-flight header checks (`preflight_check()`)
