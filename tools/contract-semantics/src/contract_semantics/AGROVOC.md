@@ -67,6 +67,30 @@ results = adapter.resolve_concept(
 | `include_narrower` | `bool` | `False` | Traverse `skos:narrower` children |
 | `narrower_depth` | `int` | `1` | Max depth for narrower traversal |
 
+### lookup_by_label()
+
+Reverse lookup: concept label → concept URI. Used by the compiler to resolve human-readable concept labels.
+
+```python
+uri = adapter.lookup_by_label("wheat", language="en")
+# Returns: "http://aims.fao.org/aos/agrovoc/c_8373"
+
+# Case-insensitive
+uri = adapter.lookup_by_label("Wheat", language="en")  # same URI
+
+# Russian
+uri = adapter.lookup_by_label("пшеница", language="ru")
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `label` | `str` | required | Human-readable concept label |
+| `language` | `str` | `"en"` | Language code to search in |
+
+Raises:
+- `KeyError` if the label is not found (includes fuzzy-match suggestions via rapidfuzz).
+- `ValueError` if the label is ambiguous (multiple distinct concept URIs match).
+
 ---
 
 ## Offline Mode Details
@@ -87,4 +111,4 @@ The online adapter sends SPARQL queries to the public AGROVOC endpoint via httpx
 
 ## Test Coverage
 
-9 tests in `tests/test_agrovoc.py` using a fixture graph (`conftest.py`) containing wheat, barley, maize, buckwheat, sunflowers, and durum wheat (narrower of wheat) with English and Russian labels.
+13 tests in `tests/test_agrovoc.py` using a fixture graph (`conftest.py`) containing wheat, barley, maize, buckwheat, sunflowers, and durum wheat (narrower of wheat) with English and Russian labels. Includes 4 tests for `lookup_by_label()` (exact, case-insensitive, not-found, Russian).

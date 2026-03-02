@@ -1,0 +1,165 @@
+{
+  "@context": "https://ckir.dev/context/v1",
+  "@type": "ExtractionContract",
+  "provider": "ru_ag_ministry",
+  "description": "Russian Ministry of Agriculture weekly grain reports",
+  "domain": "agriculture",
+  "sourceFormat": "docx",
+  "languages": ["en", "ru"],
+  "model": "openai/gpt-4o",
+
+  "report_date": {
+    "source": "filename",
+    "hint": "Weekly report date period after 'EOW', e.g. 'June 20-21'"
+  },
+
+  "categories": {
+    "harvest": {
+      "keywords": [
+        "area harvested", "yield", "collected", "bunker",
+        "centner", "harvested area", "crop harvested"
+      ]
+    },
+    "planting": {
+      "keywords": [
+        "spring crops", "moa target", "spring wheat", "spring barley",
+        "sown area", "planting", "sowing", "planted"
+      ]
+    },
+    "export": {
+      "keywords": ["export", "shipment", "ports", "fob", "vessel", "cargo"]
+    }
+  },
+
+  "outputs": {
+    "harvest": {
+      "category": "harvest",
+      "filename": "harvest.parquet",
+      "schema": {
+        "description": "Harvest progress by region, metric, and year",
+        "columns": [
+          {
+            "name": "Region",
+            "type": "string",
+            "description": "Geographic region",
+            "aliases": ["Region"],
+            "grounding": {
+              "ontology": "geonames",
+              "country": "RU",
+              "level": "ADM1",
+              "enrich": ["lat", "lng", "admin1Code", "countryCode"]
+            }
+          },
+          {
+            "name": "Report_date",
+            "type": "string",
+            "description": "Reporting period label",
+            "source": "report_date"
+          },
+          {
+            "name": "Crop",
+            "type": "string",
+            "description": "Crop name",
+            "source": "title"
+          },
+          {
+            "name": "Campaign",
+            "type": "string",
+            "description": "Campaign type",
+            "source": "constant",
+            "value": "HARVESTING"
+          },
+          {
+            "name": "Metric",
+            "type": "string",
+            "description": "Measurement type",
+            "aliases": ["Area harvested", "collected", "Yield"],
+            "grounding": {
+              "ontology": "agrovoc",
+              "concepts": ["area harvested", "crop yield", "harvesting"]
+            }
+          },
+          {
+            "name": "Value",
+            "type": "float",
+            "description": "Numeric value for the metric",
+            "aliases": ["{YYYY}"],
+            "format": "#,##"
+          },
+          {
+            "name": "Year",
+            "type": "int",
+            "description": "Reporting year",
+            "source": "constant",
+            "value": "{YYYY}"
+          }
+        ]
+      }
+    },
+    "planting": {
+      "category": "planting",
+      "filename": "planting.parquet",
+      "schema": {
+        "description": "Planting/sowing progress by region and crop",
+        "columns": [
+          {
+            "name": "Region",
+            "type": "string",
+            "description": "Geographic region",
+            "aliases": ["Region"],
+            "grounding": {
+              "ontology": "geonames",
+              "country": "RU",
+              "level": "ADM1",
+              "enrich": ["lat", "lng", "admin1Code", "countryCode"]
+            }
+          },
+          {
+            "name": "Area",
+            "type": "float",
+            "description": "MoA target area",
+            "aliases": ["MOA Target {YYYY}", "Area planted", "Target area"],
+            "format": "#,##"
+          },
+          {
+            "name": "Value",
+            "type": "float",
+            "description": "Actual sown area",
+            "aliases": ["{YYYY}"],
+            "format": "#,##"
+          },
+          {
+            "name": "Crop",
+            "type": "string",
+            "description": "Crop name",
+            "aliases": [
+              "spring crops", "spring grain", "spring wheat", "spring barley",
+              "corn", "rice", "buckwheat", "sunflower", "soya", "rape",
+              "grains and grasses"
+            ],
+            "format": "lowercase",
+            "grounding": {
+              "ontology": "agrovoc",
+              "concepts": ["wheat", "barley", "maize", "rice", "buckwheat", "sunflowers", "soyabeans", "rapeseed"],
+              "variants": ["spring"]
+            }
+          },
+          {
+            "name": "Report_date",
+            "type": "string",
+            "description": "Reporting period label",
+            "source": "report_date",
+            "suffix": " interim report"
+          },
+          {
+            "name": "Year",
+            "type": "int",
+            "description": "Reporting year",
+            "source": "constant",
+            "value": "{YYYY}"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -9,6 +9,7 @@ from pathlib import Path
 import click
 
 from contract_semantics.agrovoc import AgrovocAdapter
+from contract_semantics.compile import compile_contract
 from contract_semantics.diff import diff_aliases
 from contract_semantics.geonames import GeoNamesAdapter
 from contract_semantics.materialize import materialize_contract
@@ -200,6 +201,70 @@ def materialize(contract_path: str, output: str, geo_sidecar: str | None, merge:
             total_aliases += len(col.get("aliases", []))
 
     click.echo(f"Materialized contract written to {output}")
+    click.echo(f"Total aliases across all columns: {total_aliases}")
+    if geo_sidecar:
+        click.echo(f"Geo sidecar written to {geo_sidecar}")
+
+
+@main.command("compile")
+@click.argument("jsonld_path", type=click.Path(exists=True))
+@click.option("--output", "-o", required=True, help="Output materialized contract path")
+@click.option("--geo-sidecar", default=None, help="Output geo sidecar path")
+@click.option("--merge", default="union", type=click.Choice(["union", "resolved_only", "manual_priority"]))
+def compile_cmd(jsonld_path: str, output: str, geo_sidecar: str | None, merge: str) -> None:
+    """Compile a JSON-LD contract to a materialized contract."""
+    # Detect what the contract needs
+    with open(jsonld_path) as f:
+        contract = json.load(f)
+
+    needs_agrovoc = False
+    needs_geonames = False
+    for _out_name, out_spec in contract.get("outputs", {}).items():
+        for col in out_spec.get("schema", {}).get("columns", []):
+            grounding = col.get("grounding")
+            if grounding:
+                ontology = grounding.get("ontology", "")
+                if ontology == "agrovoc":
+                    needs_agrovoc = True
+                elif ontology == "geonames":
+                    needs_geonames = True
+
+    agrovoc: AgrovocAdapter | None = None
+    geonames: GeoNamesAdapter | None = None
+
+    if needs_agrovoc:
+        nt_path = _DATA_DIR / "agrovoc_core.nt"
+        if nt_path.exists():
+            click.echo(f"Loading AGROVOC from {nt_path} ...")
+            agrovoc = AgrovocAdapter.from_file(nt_path)
+        else:
+            click.echo("Using AGROVOC SPARQL endpoint (online mode).")
+            agrovoc = AgrovocAdapter.online()
+
+    if needs_geonames:
+        ru_path = _DATA_DIR / "RU.txt"
+        if ru_path.exists():
+            click.echo(f"Loading GeoNames data from {ru_path} ...")
+            geonames = GeoNamesAdapter.from_file(ru_path)
+        else:
+            click.echo("No local GeoNames data. Run 'fetch-geonames' first.", err=True)
+            sys.exit(1)
+
+    result = compile_contract(
+        jsonld_path,
+        agrovoc=agrovoc,
+        geonames=geonames,
+        merge_strategy=merge,
+        output_path=output,
+        geo_sidecar_path=geo_sidecar,
+    )
+
+    total_aliases = 0
+    for _out_name, out_spec in result.get("outputs", {}).items():
+        for col in out_spec.get("schema", {}).get("columns", []):
+            total_aliases += len(col.get("aliases", []))
+
+    click.echo(f"Compiled contract written to {output}")
     click.echo(f"Total aliases across all columns: {total_aliases}")
     if geo_sidecar:
         click.echo(f"Geo sidecar written to {geo_sidecar}")

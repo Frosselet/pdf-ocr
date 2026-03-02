@@ -3,7 +3,19 @@
 Milestone-level progress for docpact, the CK-IR reference implementation.
 One entry per significant capability or phase transition.
 
-## Phase 1: Semantic Contracts (in progress)
+## Phase 1.5: JSON-LD Contract Authoring (in progress)
+
+### 2026-03-01 — JSON-LD compiler: `compile` command
+- `compile.py`: JSON-LD contract → materialized contract via 2-step architecture (grounding resolution + materialization)
+- `lookup_by_label()` on `AgrovocAdapter`: reverse lookup from concept label to URI (case-insensitive, fuzzy suggestions on miss)
+- `enumerate_features()` + `LEVEL_MAP` on `GeoNamesAdapter`: bulk feature enumeration by country + admin level
+- `_materialize_dict()` refactor: materialize from in-memory dict (compiler reuses existing materialization pipeline)
+- `compile` CLI command with adapter auto-detection
+- `contracts/ru_ag_ministry.jsonld`: JSON-LD version of Russian agriculture contract (grounding blocks replace 83 duplicated GeoNames URIs)
+- 28 new tests in `test_compile.py` + 7 adapter extension tests
+- 156 contract-semantics tests, 614 docpact tests, all passing
+
+## Phase 1: Semantic Contracts (complete)
 
 ### 2026-03-01 — Phase 1 closure: tests + acceptance criteria
 - `build_context_data()` refactored from `build_semantic_context()` for docpact-independent testing

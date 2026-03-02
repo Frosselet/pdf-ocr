@@ -49,6 +49,38 @@ def materialize_contract(
     with open(annotated_path) as f:
         contract = json.load(f)
 
+    return _materialize_dict(
+        contract,
+        agrovoc=agrovoc,
+        geonames=geonames,
+        merge_strategy=merge_strategy,
+        output_path=output_path,
+        geo_sidecar_path=geo_sidecar_path,
+    )
+
+
+def _materialize_dict(
+    contract: dict,
+    *,
+    agrovoc: AgrovocAdapter | None = None,
+    geonames: GeoNamesAdapter | None = None,
+    merge_strategy: str = "union",
+    output_path: str | Path | None = None,
+    geo_sidecar_path: str | Path | None = None,
+) -> dict:
+    """Core materialization logic on an in-memory dict.
+
+    Parameters:
+        contract: Annotated contract dict (with ``concept_uris`` and ``resolve``).
+        agrovoc: AGROVOC adapter instance.
+        geonames: GeoNames adapter instance.
+        merge_strategy: Alias merge strategy.
+        output_path: If given, write materialized contract to this path.
+        geo_sidecar_path: If given, write GeoNames sidecar to this path.
+
+    Returns:
+        The materialized contract dict.
+    """
     materialized = copy.deepcopy(contract)
     geo_sidecar: dict[str, dict] = {}
 

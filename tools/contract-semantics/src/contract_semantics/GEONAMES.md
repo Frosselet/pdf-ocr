@@ -20,6 +20,7 @@ Three capabilities, two operating modes:
 | **Resolve** | `resolve_geoname()` | Multilingual alternate names as `ResolvedAlias` |
 | **Enrich** | `enrich_geoname()` | Coordinates, admin codes, population as `GeoEnrichment` |
 | **Search** | `search_geonames()` | Feature matches by name with filters as `GeoSearchResult` |
+| **Enumerate** | `enumerate_features()` | All features for a country + admin level as `GeoSearchResult` |
 
 | Mode | Data Source | Best For |
 |---|---|---|
@@ -87,6 +88,34 @@ e = adapter.enrich_geoname("https://sws.geonames.org/524894/")
 # )
 ```
 
+### enumerate_features()
+
+Return all features matching a country + admin level. Used by the compiler for bulk GeoNames grounding.
+
+```python
+results = adapter.enumerate_features("RU", "ADM1")
+# Returns all ADM1 features in Russia
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `country` | `str` | required | ISO 3166-1 alpha-2 country code |
+| `level` | `str` | required | Admin level key from `LEVEL_MAP` |
+
+Raises `KeyError` if level is not in `LEVEL_MAP`.
+
+#### LEVEL_MAP
+
+Maps admin level names to GeoNames `(feature_class, feature_code)` tuples:
+
+| Level | Feature Class | Feature Code |
+|---|---|---|
+| `ADM1` | `A` | `ADM1` |
+| `ADM2` | `A` | `ADM2` |
+| `ADM3` | `A` | `ADM3` |
+| `PPL` | `P` | `PPL` |
+| `PPLA` | `P` | `PPLA` |
+
 ### search_geonames()
 
 Search features by name with optional filters.
@@ -153,4 +182,4 @@ This enables a simple post-pipeline GIS join: `df.merge(geo_df, left_on="Region"
 
 ## Test Coverage
 
-12 tests in `tests/test_geonames.py` using a fixture dataset (`conftest.py`) containing three Russian admin-1 regions (Moscow Oblast, Voronezh Oblast, Penza Oblast) with Russian alternate names.
+15 tests in `tests/test_geonames.py` using a fixture dataset (`conftest.py`) containing three Russian admin-1 regions (Moscow Oblast, Voronezh Oblast, Penza Oblast) with Russian alternate names. Includes 3 tests for `enumerate_features()` (ADM1, no match, level map coverage).

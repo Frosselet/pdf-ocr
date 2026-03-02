@@ -17,6 +17,12 @@ from rdflib.namespace import SKOS
 
 from contract_semantics.models import ResolvedAlias
 
+try:
+    from rapidfuzz import fuzz, process as rfprocess
+except ImportError:  # pragma: no cover
+    fuzz = None  # type: ignore[assignment]
+    rfprocess = None  # type: ignore[assignment]
+
 AGROVOC_SPARQL = "https://agrovoc.fao.org/sparql"
 
 _SKOSXL = Namespace("http://www.w3.org/2008/05/skos-xl#")
@@ -94,6 +100,101 @@ class AgrovocAdapter:
         return self._resolve_online(
             uri, languages, label_types, include_narrower, narrower_depth
         )
+
+    # ── Reverse lookup ─────────────────────────────────────────────────
+
+    def lookup_by_label(
+        self,
+        label: str,
+        *,
+        language: str = "en",
+    ) -> str:
+        """Reverse lookup: concept label → concept URI.
+
+        Searches for the label among ``skos:prefLabel`` entries (case-insensitive).
+
+        Parameters:
+            label: Human-readable concept label (e.g. ``"wheat"``).
+            language: Language code to search in (default ``"en"``).
+
+        Returns:
+            The concept URI string.
+
+        Raises:
+            KeyError: If label not found (with fuzzy-match suggestions).
+            ValueError: If label is ambiguous (multiple distinct concept URIs match).
+        """
+        if self._graph is not None:
+            return self._lookup_offline(label, language)
+        return self._lookup_online(label, language)
+
+    def _lookup_offline(self, label: str, language: str) -> str:
+        g = self._graph
+        assert g is not None
+        label_lower = label.lower()
+
+        # Search for matching prefLabels (case-insensitive)
+        matching_uris: set[str] = set()
+        for subj, _p, obj in g.triples((None, SKOS.prefLabel, None)):
+            if not isinstance(obj, Literal):
+                continue
+            if (obj.language or "en") != language:
+                continue
+            if str(obj).lower() == label_lower:
+                matching_uris.add(str(subj))
+
+        if len(matching_uris) == 1:
+            return matching_uris.pop()
+
+        if len(matching_uris) > 1:
+            raise ValueError(
+                f"Ambiguous label {label!r} (language={language!r}) matches "
+                f"{len(matching_uris)} concepts: {sorted(matching_uris)}"
+            )
+
+        # No match — collect all prefLabels in this language for suggestions
+        all_labels: list[str] = []
+        for _s, _p, obj in g.triples((None, SKOS.prefLabel, None)):
+            if isinstance(obj, Literal) and (obj.language or "en") == language:
+                all_labels.append(str(obj))
+
+        suggestions = self._fuzzy_suggestions(label, all_labels)
+        msg = f"Label {label!r} not found in AGROVOC (language={language!r})."
+        if suggestions:
+            msg += f" Similar labels: {suggestions}"
+        raise KeyError(msg)
+
+    def _lookup_online(self, label: str, language: str) -> str:
+        query = f"""
+        PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+        SELECT DISTINCT ?concept WHERE {{
+            ?concept skos:prefLabel ?label .
+            FILTER(LCASE(STR(?label)) = LCASE("{label}"))
+            FILTER(lang(?label) = "{language}")
+        }}
+        """
+        uris = self._sparql_select(query)
+
+        if len(uris) == 1:
+            return uris[0]
+
+        if len(uris) > 1:
+            raise ValueError(
+                f"Ambiguous label {label!r} (language={language!r}) matches "
+                f"{len(uris)} concepts: {sorted(uris)}"
+            )
+
+        raise KeyError(
+            f"Label {label!r} not found in AGROVOC (language={language!r})."
+        )
+
+    @staticmethod
+    def _fuzzy_suggestions(query: str, candidates: list[str], limit: int = 5) -> list[str]:
+        """Return fuzzy-matched suggestions from candidates."""
+        if not candidates or rfprocess is None:
+            return []
+        matches = rfprocess.extract(query, candidates, scorer=fuzz.ratio, limit=limit)
+        return [m[0] for m in matches if m[1] > 50]
 
     def _resolve_offline(
         self,

@@ -100,3 +100,22 @@ class TestResolveConceptOffline:
         )
         assert {r.alias for r in wheat} == {"wheat"}
         assert {r.alias for r in barley} == {"barley"}
+
+
+class TestLookupByLabel:
+    def test_lookup_by_label_exact(self, agrovoc_adapter: AgrovocAdapter) -> None:
+        uri = agrovoc_adapter.lookup_by_label("wheat", language="en")
+        assert uri == "http://aims.fao.org/aos/agrovoc/c_8373"
+
+    def test_lookup_by_label_case_insensitive(self, agrovoc_adapter: AgrovocAdapter) -> None:
+        uri = agrovoc_adapter.lookup_by_label("Wheat", language="en")
+        assert uri == "http://aims.fao.org/aos/agrovoc/c_8373"
+
+    def test_lookup_by_label_not_found(self, agrovoc_adapter: AgrovocAdapter) -> None:
+        import pytest
+        with pytest.raises(KeyError, match="not found"):
+            agrovoc_adapter.lookup_by_label("quinoa", language="en")
+
+    def test_lookup_by_label_russian(self, agrovoc_adapter: AgrovocAdapter) -> None:
+        uri = agrovoc_adapter.lookup_by_label("пшеница", language="ru")
+        assert uri == "http://aims.fao.org/aos/agrovoc/c_8373"

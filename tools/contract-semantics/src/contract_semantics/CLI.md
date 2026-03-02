@@ -3,7 +3,7 @@
 > **Module**: `cli.py`
 > **Entry point**: `contract-semantics` (installed via `pyproject.toml`)
 
-Click-based command-line interface for all contract-semantics operations. Seven commands covering the full workflow: data fetching, resolution, materialization, diffing, validation, and shape generation.
+Click-based command-line interface for all contract-semantics operations. Eight commands covering the full workflow: data fetching, resolution, compilation, materialization, diffing, validation, and shape generation.
 
 ---
 
@@ -62,6 +62,26 @@ contract-semantics materialize contracts/ru_ag_ministry.json \
 contract-semantics materialize contracts/ru_ag_ministry.json \
     -o contracts/materialized.json \
     --geo-sidecar contracts/ru_ag_ministry_geo.json \
+    --merge union
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `-o`, `--output` | required | Output materialized contract path |
+| `--geo-sidecar` | none | Output geo sidecar path (GeoNames metadata) |
+| `--merge` | `union` | Merge strategy: `union`, `resolved_only`, `manual_priority` |
+
+### compile
+
+Compile a JSON-LD contract to a materialized contract. Resolves `grounding` blocks (AGROVOC concept labels, GeoNames country+level) into `concept_uris` + `resolve` entries, then materializes aliases.
+
+```bash
+contract-semantics compile contracts/ru_ag_ministry.jsonld \
+    -o contracts/ru_ag_ministry_compiled.json
+
+contract-semantics compile contracts/ru_ag_ministry.jsonld \
+    -o contracts/compiled.json \
+    --geo-sidecar contracts/geo.json \
     --merge union
 ```
 

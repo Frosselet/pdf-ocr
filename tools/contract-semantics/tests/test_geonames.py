@@ -91,3 +91,23 @@ class TestSearchGeonames:
     def test_search_no_results(self, geonames_adapter: GeoNamesAdapter) -> None:
         results = geonames_adapter.search_geonames("Antarctica")
         assert results == []
+
+
+class TestEnumerateFeatures:
+    def test_enumerate_features_adm1(self, geonames_adapter: GeoNamesAdapter) -> None:
+        results = geonames_adapter.enumerate_features("RU", "ADM1")
+        assert len(results) == 3
+        names = {r.name for r in results}
+        assert "Moscow Oblast" in names
+        assert "Voronezh Oblast" in names
+        assert "Penza Oblast" in names
+
+    def test_enumerate_features_no_match(self, geonames_adapter: GeoNamesAdapter) -> None:
+        results = geonames_adapter.enumerate_features("XX", "ADM1")
+        assert results == []
+
+    def test_level_map_coverage(self) -> None:
+        from contract_semantics.geonames import LEVEL_MAP
+        for level, (cls, code) in LEVEL_MAP.items():
+            assert isinstance(cls, str) and len(cls) == 1
+            assert isinstance(code, str) and len(code) >= 3

@@ -37,6 +37,16 @@ _ALT_LANG = 2
 _ALT_NAME = 3
 
 
+# Level → (feature_class, feature_code) mapping
+LEVEL_MAP: dict[str, tuple[str, str]] = {
+    "ADM1": ("A", "ADM1"),
+    "ADM2": ("A", "ADM2"),
+    "ADM3": ("A", "ADM3"),
+    "PPL": ("P", "PPL"),
+    "PPLA": ("P", "PPLA"),
+}
+
+
 def _parse_geonames_uri(uri: str) -> int:
     """Extract geoname ID from a GeoNames URI like ``https://sws.geonames.org/524894/``."""
     parts = uri.rstrip("/").rsplit("/", 1)
@@ -327,6 +337,102 @@ class GeoNamesAdapter:
             feature_code=data.get("fcode", ""),
             population=data.get("population"),
         )
+
+    # ── Enumerate ─────────────────────────────────────────────────────────
+
+    def enumerate_features(
+        self,
+        country: str,
+        level: str,
+    ) -> list[GeoSearchResult]:
+        """Return all features matching a country + admin level.
+
+        Parameters:
+            country: ISO 3166-1 alpha-2 country code (e.g. ``"RU"``).
+            level: Administrative level key from :data:`LEVEL_MAP`
+                (e.g. ``"ADM1"``, ``"ADM2"``, ``"PPL"``).
+
+        Returns:
+            List of :class:`GeoSearchResult` entries.
+
+        Raises:
+            KeyError: If *level* is not in :data:`LEVEL_MAP`.
+        """
+        if level not in LEVEL_MAP:
+            raise KeyError(
+                f"Unknown level {level!r}. Supported: {sorted(LEVEL_MAP)}"
+            )
+        feat_class, feat_code = LEVEL_MAP[level]
+
+        if self._features:
+            return self._enumerate_offline(country, feat_class, feat_code)
+        return self._enumerate_online(country, feat_class, feat_code)
+
+    def _enumerate_offline(
+        self,
+        country: str,
+        feature_class: str,
+        feature_code: str,
+    ) -> list[GeoSearchResult]:
+        results: list[GeoSearchResult] = []
+        for feat in self._features.values():
+            if (
+                feat["country_code"] == country
+                and feat["feature_class"] == feature_class
+                and feat["feature_code"] == feature_code
+            ):
+                results.append(
+                    GeoSearchResult(
+                        geoname_id=feat["geoname_id"],
+                        name=feat["name"],
+                        country_code=feat["country_code"],
+                        feature_class=feat["feature_class"],
+                        feature_code=feat["feature_code"],
+                        admin1_code=feat["admin1_code"],
+                        lat=feat["lat"],
+                        lng=feat["lng"],
+                    )
+                )
+        return results
+
+    def _enumerate_online(
+        self,
+        country: str,
+        feature_class: str,
+        feature_code: str,
+    ) -> list[GeoSearchResult]:
+        if not self._username:
+            raise ValueError("GeoNames API requires a username")
+
+        with httpx.Client(timeout=30) as client:
+            resp = client.get(
+                f"{GEONAMES_API}/searchJSON",
+                params={
+                    "country": country,
+                    "featureClass": feature_class,
+                    "featureCode": feature_code,
+                    "maxRows": 1000,
+                    "username": self._username,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        results: list[GeoSearchResult] = []
+        for g in data.get("geonames", []):
+            results.append(
+                GeoSearchResult(
+                    geoname_id=g.get("geonameId", 0),
+                    name=g.get("name", ""),
+                    country_code=g.get("countryCode", ""),
+                    feature_class=g.get("fcl", ""),
+                    feature_code=g.get("fcode", ""),
+                    admin1_code=g.get("adminCode1", ""),
+                    lat=float(g.get("lat", 0)),
+                    lng=float(g.get("lng", 0)),
+                )
+            )
+        return results
 
     # ── Search ───────────────────────────────────────────────────────────
 
